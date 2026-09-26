@@ -1,40 +1,129 @@
-- name: Compile Kernel va tao uImage Recovery
+name: Build Mi3 Rescue PoC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cai dat moi truong build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev gawk git subversion libssl-dev u-boot-tools file wget libelf-dev zlib1g-dev flex bison autoconf
+
+      - name: Lay source Padavan va Toolchain
+        run: |
+          git clone --depth=1 https://github.com/hanwckf/rt-n56u.git ~/rt-n56u
+          cd ~/rt-n56u/toolchain-mipsel
+          sh dl_toolchain.sh
+          # Set bien PATH toan cuc cho tat ca cac step tiep theo
+          echo "$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin" >> $GITHUB_PATH
+
+      - name: Build Dropbear Static
+        run: |
+          git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
+          cd ~/dropbear_src
+          autoconf
+          autoheader
+          ./configure \
+            --host=mipsel-linux-uclibc \
+            --disable-zlib \
+            --disable-syslog \
+            --disable-lastlog \
+            --disable-utmp \
+            --disable-wtmp \
+            CC=mipsel-linux-uclibc-gcc \
+            LDFLAGS="-static"
+          make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
+
+      - name: Build Busybox Static tu nguon Padavan
+        run: |
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
+
+          # Su dung file config co san cua Padavan
+          if [ -f ../busybox.config ]; then
+            cp ../busybox.config .config
+          elif [ -f configs/mips_defconfig ]; then
+            cp configs/mips_defconfig .config
+          else
+            make ARCH=mips defconfig
+          fi
+
+          # Bat static va tat cac module de bi loi link uClibc
+          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_FEATURE_INETD_RPC=y/# CONFIG_FEATURE_INETD_RPC is not set/' .config
+          sed -i 's/CONFIG_PAM=y/# CONFIG_PAM is not set/' .config
+
+          # Tu dong ap dung config
+          yes "" | make ARCH=mips oldconfig
+
+          # Bien dich Busybox
+          make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
+
+      - name: Chuan bi Initramfs Rootfs
+        run: |
+          mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc,mnt,tmp,var,root}
+
+          # Copy script khoi dong va config wifi
+          cp init ~/initramfs_root/init
+          chmod +x ~/initramfs_root/init
+          cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
+
+          # Cai dat BusyBox vao Initramfs
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
+          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
+
+          # Copy Dropbear vao Initramfs
+          cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
+          cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
+          chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey
+
+      - name: Compile Kernel va tao uImage Recovery
         run: |
           cd ~/rt-n56u/trunk/linux-3.4.x
 
-          # Kɔpi di kɔrɛkt kernel config fɔ MT7620 / Xiaomi Mi-3
-          if [ -f arch/mips/configs/ramips_defconfig ]; then
+          # Tim va lay chinh xac config kernel cua MI-3 / MT7620 tu Padavan
+          if [ -f ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config ]; then
+            cp ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config .config
+          elif [ -f arch/mips/configs/ramips_defconfig ]; then
             cp arch/mips/configs/ramips_defconfig .config
           elif [ -f arch/mips/configs/rt-n56u_defconfig ]; then
             cp arch/mips/configs/rt-n56u_defconfig .config
-          elif [ -f arch/mips/configs/mt7620_defconfig ]; then
-            cp arch/mips/configs/mt7620_defconfig .config
           else
-            # Luk insay trunk kernel config folder
-            find arch/mips/configs/ -type f | head -n 20
-            cp arch/mips/configs/rt2880_defconfig .config 2>/dev/null || true
+            make ARCH=mips defconfig
           fi
 
-          # Enable initramfs insay kernel
+          # Tich hop initramfs truc tiep vao Kernel
           scripts/config --enable CONFIG_BLK_DEV_INITRD
           scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
 
-          # Enable networking & MT7620 internal Wi-Fi
+          # Bat driver mang day va driver Wi-Fi noi bo MT7620
           scripts/config --enable CONFIG_RAETH
           scripts/config --enable CONFIG_RT2860V2_AP
 
-          # Pas evri prompt otomatikali wit default values
+          # Tu dong ap dung config kernel ma khong bi treo prompt
           yes "" | make ARCH=mips oldconfig
 
           # Compile kernel vmlinux
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
-          # Pack am to uImage
+          # Dong goi thanh uImage
           mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
           lzma -9 -f -k ~/vmlinux.bin
           mkimage -A mips -O linux -T kernel -C lzma \
             -a 0x80000000 -e 0x80000000 \
             -n "Mi3_Recovery_PoC" \
             -d ~/vmlinux.bin.lzma $GITHUB_WORKSPACE/uImage_recovery
+
+      - name: Luu tru artifact uImage_recovery
+        uses: actions/upload-artifact@v4
+        with:
+          name: uImage_recovery
+          path: uImage_recovery
