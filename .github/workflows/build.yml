@@ -36,7 +36,6 @@ jobs:
       - name: Build MTD Utils cho MT7620 (Static)
         run: |
           cd ~/rt-n56u/trunk/user/mtd_write
-          # Trỏ include vào kernel headers để tìm thấy mtd-abi.h
           mipsel-linux-uclibc-gcc -static -O2 \
             -I. \
             -I$HOME/rt-n56u/trunk/linux-3.4.x/include \
@@ -72,7 +71,7 @@ jobs:
           cp ~/tools_bin/mtd ~/initramfs_root/sbin/mtd
           chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey ~/initramfs_root/sbin/mtd
 
-          # 3. Tạo cấu hình Wi-Fi (SSID: Mi3_recovery / Pass: 1234567890)
+          # 3. Cấu hình Wi-Fi (SSID: Mi3_recovery / Pass: 1234567890)
           cat << 'EOF' > ~/initramfs_root/etc/Wireless/RT2860/RT2860_default_v24.dat
           Default
           CountryRegion=5
@@ -113,7 +112,7 @@ jobs:
           HT_MCS=33
           EOF
 
-          # 4. Cấu hình DHCP Server (cấp IP cho điện thoại khi kết nối Wi-Fi)
+          # 4. Cấu hình DHCP Server cấp IP
           cat << 'EOF' > ~/initramfs_root/etc/udhcpd.conf
           start 192.168.1.100
           end 192.168.1.200
@@ -134,22 +133,18 @@ jobs:
           mount -t tmpfs -o size=64M tmpfs /tmp
           mount -t tmpfs tmpfs /var
 
-          # Loopback & Mạng dây
           ifconfig lo 127.0.0.1 up
           ifconfig eth2 192.168.1.1 netmask 255.255.255.0 up 2>/dev/null || true
 
-          # Khởi chạy Wi-Fi MT7620 và DHCP Server
           ifconfig ra0 192.168.1.1 netmask 255.255.255.0 up
           udhcpd /etc/udhcpd.conf
 
-          # Khởi tạo SSH Dropbear (pass root: admin)
           mkdir -p /etc/dropbear
           [ ! -f /etc/dropbear/dropbear_rsa_host_key ] && dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
           echo "root:x:0:0:root:/root:/bin/sh" > /etc/passwd
           echo "root:$1$O5P$9.bJzMhE7H.:19000:0:99999:7:::" > /etc/shadow
           dropbear -p 22
 
-          # Web Server BusyBox
           httpd -h /www
 
           exec /bin/sh
@@ -160,25 +155,31 @@ jobs:
         run: |
           cd ~/rt-n56u/trunk/linux-3.4.x
 
+          # Dùng config chuẩn của Mi-3
           cp ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config .config
 
+          # Cấu hình Initramfs và định dạng nén đầy đủ để không bị kẹt câu hỏi choice
           scripts/config --enable CONFIG_BLK_DEV_INITRD
           scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
+          scripts/config --enable CONFIG_RD_GZIP
+          scripts/config --disable CONFIG_RD_BZIP2
+          scripts/config --disable CONFIG_RD_LZMA
+          scripts/config --disable CONFIG_RD_XZ
+          scripts/config --disable CONFIG_RD_LZO
+          scripts/config --enable CONFIG_INITRAMFS_COMPRESSION_NONE
+          scripts/config --disable CONFIG_INITRAMFS_COMPRESSION_GZIP
 
-          # Tắt các module lỗi
+          # Tắt các module lỗi biên dịch độc lập
           scripts/config --disable CONFIG_RA_HW_NAT
           scripts/config --disable CONFIG_PPP
           scripts/config --disable CONFIG_PPPOE
           scripts/config --disable CONFIG_PPPOL2TP
           scripts/config --disable CONFIG_PPTP
 
-          # Bật driver Wi-Fi
-          scripts/config --enable CONFIG_RT2860V2_AP
-          scripts/config --enable CONFIG_RT2860V2_STA
-
-          yes "" | make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- oldconfig
+          # Tắt kiểm tra warning như error của GCC
+          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- olddefconfig
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
           mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
