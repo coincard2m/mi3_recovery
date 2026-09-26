@@ -19,10 +19,9 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/hanwckf/rt-n56u.git ~/rt-n56u
           cd ~/rt-n56u/toolchain-mipsel
-          # Tai nhanh toolchain mipsel-linux-uclibc prebuilt chuan cua hanwckf
           sh dl_toolchain.sh
 
-      - name: Build Dropbear Static truc tiep bang Toolchain
+      - name: Build Dropbear Static tu nguon Dropbear
         run: |
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
@@ -40,22 +39,34 @@ jobs:
             LDFLAGS="-static"
           make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
 
-      - name: Chuan bi Initramfs Rootfs
+      - name: Build Busybox Static tu nguon san co cua Padavan
+        run: |
+          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
+          cd ~/rt-n56u/trunk/user/busybox
+
+          # Su dung cau hinh mac dinh san co cua Padavan cho router
+          make defconfig
+
+          # Bat che do build static de chay doc lap tren Initramfs khong can copy them thu vien .so
+          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+
+          # Compile BusyBox bang chinh Toolchain MIPS
+          make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
+
+      - name: Chuan bi cay thu muc Initramfs Rootfs
         run: |
           mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc,mnt,tmp,var,root}
 
-          # Copy script init va file cau hinh Wi-Fi
+          # Copy script khoi dong va config wifi
           cp init ~/initramfs_root/init
           chmod +x ~/initramfs_root/init
           cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
 
-          # T?i BusyBox mipsel static truc tiep tu trang chu busybox.net
-          wget -q https://busybox.net/downloads/binaries/1.31.0-defconfig-multiarch/busybox-mipsel -O ~/initramfs_root/bin/busybox
-          chmod +x ~/initramfs_root/bin/busybox
-          cd ~/initramfs_root/bin
-          ./busybox --install -s .
+          # Cai dat BusyBox vua compile vao Initramfs
+          cd ~/rt-n56u/trunk/user/busybox
+          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
-          # Copy Dropbear static vua bien dich vao initramfs
+          # Copy Dropbear static vao Initramfs
           cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
           cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
           chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey
@@ -65,23 +76,23 @@ jobs:
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           cd ~/rt-n56u/trunk/linux-3.4.x
 
-          # Su dung config chuan cho Xiaomi Mi Router 3 (MT7620A + NAND)
+          # Su dung cau hinh kernel mac dinh
           cp arch/mips/configs/rt-n56u_defconfig .config 2>/dev/null || make defconfig ARCH=mips
 
-          # Tich hop initramfs truc tiep vao nhan
+          # Tich hop initramfs truc tiep vao Kernel
           scripts/config --enable CONFIG_BLK_DEV_INITRD
           scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
 
-          # Bat driver mang day va chip Wi-Fi noi bo MT7620
+          # Bat driver mang day va driver Wi-Fi noi bo MT7620
           scripts/config --enable CONFIG_RAETH
           scripts/config --enable CONFIG_RT2860V2_AP
 
-          # Compile kernel vmlinux
+          # Compile vmlinux
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
-          # Boc file uImage qua LZMA (dia chi RAM nap: 0x80000000)
+          # Dong goi thanh uImage
           mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
           lzma -9 -f -k ~/vmlinux.bin
           mkimage -A mips -O linux -T kernel -C lzma \
