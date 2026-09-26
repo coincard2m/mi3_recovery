@@ -1,4 +1,4 @@
-name: Build Mi3 Rescue TWRP-Style (OpenWrt)
+name: Build Mi3 TWRP Rescue (Lean Lede Base)
 
 on:
   workflow_dispatch:
@@ -7,26 +7,38 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Cai dat moi truong ImageBuilder
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev gawk git subversion libssl-dev file wget libelf-dev zlib1g-dev python3 unzip
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Tai OpenWrt ImageBuilder (23.05.3 - ramips/mt7620)
+      - name: Cai dat moi truong build
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          wget https://downloads.openwrt.org/releases/23.05.3/targets/ramips/mt7620/openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64.tar.xz
-          tar -xvf openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64.tar.xz
-          mv openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64 imagebuilder
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get update -qq
+          sudo apt-get install -yqq build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
+            libz-dev patch python3 python2.7 unzip zlib1g-dev libssl-dev subversion flex uglifyjs git-core \
+            gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx \
+            libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf \
+            wget curl swig rsync
+          sudo apt-get clean
 
-      - name: Tich hop tinh nang Luu Config, Web UI, Den Breathing & Reset 3 Lan
+      - name: Clone Lean OpenWrt (Lede) Source
         run: |
-          cd imagebuilder
+          git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Cau hinh Rootfs (Web UI, Breathing LED, Reset 3 lan, Config Offset)
+        run: |
+          cd openwrt
           mkdir -p files/etc/config
           mkdir -p files/etc/hotplug.d/button
           mkdir -p files/usr/sbin
           mkdir -p files/www/cgi-bin
 
-          # 1. Cấu hình mạng LAN tĩnh
+          # 1. Mang LAN tinh 192.168.1.1
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -41,7 +53,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # 2. Cấu hình Wi-Fi mặc định
+          # 2. Wi-Fi mac dinh: Mi3_recovery / 1234567890
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -60,7 +72,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 3. Quản lý lưu và phục hồi config ở đuôi Flash (Offset 3.5MB)
+          # 3. Quan ly luu config vao offset 3.5MB (block 64k thu 56)
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -91,14 +103,14 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # 4. Tự nạp config và kích hoạt đèn vàng Breathing khi boot
+          # 4. Boot: Breathing LED vang & Nap config
           cat << 'EOF' > files/etc/rc.local
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
               echo 0 > "$led/brightness" 2>/dev/null
           done
 
-          for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*red*; do
+          for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*amber*; do
               if [ -d "$led" ]; then
                   echo timer > "$led/trigger" 2>/dev/null
                   echo 1000 > "$led/delay_on" 2>/dev/null
@@ -111,7 +123,7 @@ jobs:
           exit 0
           EOF
 
-          # 5. Xử lý nút Reset 3 lần liên tục (Mỗi nhịp <= 1s)
+          # 5. Phim Reset 3 lan lien tuc (khoang cach <= 1s)
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
@@ -149,7 +161,7 @@ jobs:
           fi
           EOF
 
-          # 6. Giao diện Web HTML
+          # 6. Giao dien Web Flasher
           cat << 'EOF' > files/www/index.html
           <!DOCTYPE html>
           <html lang="vi">
@@ -188,7 +200,7 @@ jobs:
 
               <div class="card">
                   <h3>Khôi phục gốc</h3>
-                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên router 3 lần (cách nhau 1s) hoặc bấm nút dưới:</p>
+                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên thân router 3 lần (cách nhau 1s) hoặc bấm nút dưới:</p>
                   <button class="danger" onclick="resetConfig()">Reset về mặc định</button>
               </div>
 
@@ -237,7 +249,7 @@ jobs:
           </html>
           EOF
 
-          # 7. Backend CGI: Flash ROM
+          # 7. Backend CGI Flash ROM
           cat << 'EOF' > files/www/cgi-bin/flash.cgi
           #!/bin/sh
           echo "Content-type: text/plain"
@@ -253,7 +265,7 @@ jobs:
           fi
           EOF
 
-          # 8. Backend CGI: Lưu cấu hình Wi-Fi
+          # 8. Backend CGI doi WiFi
           cat << 'EOF' > files/www/cgi-bin/wifi.cgi
           #!/bin/sh
           echo "Content-type: text/plain"
@@ -275,7 +287,7 @@ jobs:
           fi
           EOF
 
-          # 9. Backend CGI: Factory Reset
+          # 9. Backend CGI Reset
           cat << 'EOF' > files/www/cgi-bin/reset.cgi
           #!/bin/sh
           echo "Content-type: text/plain"
@@ -291,19 +303,54 @@ jobs:
 
           chmod +x files/www/cgi-bin/*
 
-      - name: Dong goi Firmware Initramfs sieu nhe
+      - name: Cau hinh toi gian cho Mi Router 3 (Initramfs Only)
         run: |
-          cd imagebuilder
-          make image PROFILE="xiaomi_mi-router-3" \
-            PACKAGES="uhttpd mtd opkg libustream-mbedtls ca-bundle \
-            -luci -luci-base -luci-ssl \
-            -dnsmasq -firewall4 -nftables -kmod-nft-core \
-            -ppp -ppp-mod-pppoe -kmod-ppp -kmod-pppoe \
-            -odhcp6c -odhcpd-ipv6only -kmod-ipv6 -ip6tables" \
-            FILES="files"
+          cd openwrt
+          cat << 'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7620=y
+          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-      - name: Luu tru ban Build
+          # Bat buoc build kernel Initramfs chay tren RAM
+          CONFIG_TARGET_ROOTFS_INITRAMFS=y
+
+          # Cong cu bat buoc
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_mtd=y
+          CONFIG_PACKAGE_opkg=y
+          CONFIG_PACKAGE_libustream-mbedtls=y
+          CONFIG_PACKAGE_ca-bundle=y
+
+          # Loai bo toan bo bloatware de dat dung luong < 3MB
+          # CONFIG_PACKAGE_luci is not set
+          # CONFIG_PACKAGE_dnsmasq is not set
+          # CONFIG_PACKAGE_firewall is not set
+          # CONFIG_PACKAGE_firewall4 is not set
+          # CONFIG_PACKAGE_ppp is not set
+          # CONFIG_PACKAGE_ppp-mod-pppoe is not set
+          # CONFIG_PACKAGE_kmod-ppp is not set
+          # CONFIG_PACKAGE_kmod-pppoe is not set
+          # CONFIG_PACKAGE_odhcp6c is not set
+          # CONFIG_PACKAGE_odhcpd-ipv6only is not set
+          # CONFIG_PACKAGE_kmod-ipv6 is not set
+          EOF
+
+          make defconfig
+
+      - name: Tai dependencies truoc khi bien dich
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec ls -l {} \;
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Bien dich Firmware
+        run: |
+          cd openwrt
+          make -j$(nproc) || make -j1 V=s
+
+      - name: Luu tru ban Build Initramfs
         uses: actions/upload-artifact@v4
         with:
           name: Mi3_TWRP_Recovery
-          path: imagebuilder/bin/targets/ramips/mt7620/*-initramfs-kernel.bin
+          path: openwrt/bin/targets/ramips/mt7620/*initramfs-kernel.bin
