@@ -21,7 +21,7 @@ jobs:
           cd ~/rt-n56u/toolchain-mipsel
           sh dl_toolchain.sh
 
-      - name: Build Dropbear Static tu nguon Dropbear
+      - name: Build Dropbear Static
         run: |
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
@@ -39,24 +39,31 @@ jobs:
             LDFLAGS="-static"
           make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
 
-      - name: Build Busybox Static tu nguon chinh thuc
+      - name: Build Busybox Static tu nguon Padavan
         run: |
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
-          # Clone truc tiep ma nguon BusyBox on dinh tu official mirror
-          git clone --depth=1 --branch 1_36_stable git://busybox.net/busybox.git ~/busybox_src
-          cd ~/busybox_src
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
 
-          # Tao config mac dinh
-          make ARCH=mips defconfig
+          # Su dung file config co san cua Padavan
+          if [ -f ../busybox.config ]; then
+            cp ../busybox.config .config
+          elif [ -f configs/mips_defconfig ]; then
+            cp configs/mips_defconfig .config
+          else
+            make ARCH=mips defconfig
+          fi
 
-          # Bat CONFIG_STATIC va tat cac module mang de xung dot voi uClibc
-          scripts/config --enable CONFIG_STATIC
-          scripts/config --disable CONFIG_FEATURE_NSLOOKUP_BIG
-          scripts/config --disable CONFIG_FEATURE_INETD_RPC
+          # Bat static va tat cac module de bi loi link uClibc
+          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_FEATURE_INETD_RPC=y/# CONFIG_FEATURE_INETD_RPC is not set/' .config
+          sed -i 's/CONFIG_PAM=y/# CONFIG_PAM is not set/' .config
 
-          # Bien dich va cai dat ra mot thu muc rieng
+          # Tu dong ap dung config khong hoi prompt
+          yes "" | make ARCH=mips oldconfig
+
+          # Bien dich
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
-          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
       - name: Chuan bi Initramfs Rootfs
         run: |
@@ -67,7 +74,11 @@ jobs:
           chmod +x ~/initramfs_root/init
           cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
 
-          # Copy Dropbear static vao Initramfs
+          # Cai dat BusyBox vao Initramfs
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
+          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
+
+          # Copy Dropbear vao Initramfs
           cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
           cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
           chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey
@@ -90,7 +101,7 @@ jobs:
           scripts/config --enable CONFIG_RAETH
           scripts/config --enable CONFIG_RT2860V2_AP
 
-          # Compile kernel vmlinux
+          # Compile vmlinux
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
           # Dong goi thanh uImage
