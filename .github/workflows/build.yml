@@ -18,7 +18,7 @@ jobs:
           tar -xvf openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64.tar.xz
           mv openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64 imagebuilder
 
-      - name: Tich hop: Luu Config, Web UI, Đèn Breathing & Reset 3 Lan
+      - name: Tich hop tinh nang Luu Config, Web UI, Den Breathing & Reset 3 Lan
         run: |
           cd imagebuilder
           mkdir -p files/etc/config
@@ -26,7 +26,7 @@ jobs:
           mkdir -p files/usr/sbin
           mkdir -p files/www/cgi-bin
 
-          # 1. Cấu hình mạng LAN tĩnh (192.168.1.1)
+          # 1. Cấu hình mạng LAN tĩnh
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -41,7 +41,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # 2. Cấu hình Wi-Fi gốc (Mi3_recovery / 1234567890)
+          # 2. Cấu hình Wi-Fi mặc định
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -60,7 +60,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 3. Quản lý lưu/khôi phục Config đuôi Flash (Offset 3.5MB)
+          # 3. Quản lý lưu và phục hồi config ở đuôi Flash (Offset 3.5MB)
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -91,21 +91,19 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # 4. KHỞI ĐỘNG: Bật đèn nhịp thở (Breathing Vàng) & Nạp config
+          # 4. Tự nạp config và kích hoạt đèn vàng Breathing khi boot
           cat << 'EOF' > files/etc/rc.local
-          # Tắt tất cả các đèn trước
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
               echo 0 > "$led/brightness" 2>/dev/null
           done
 
-          # Tìm và bật đèn Vàng/Cam chớp chậm như nhịp thở
           for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*red*; do
               if [ -d "$led" ]; then
                   echo timer > "$led/trigger" 2>/dev/null
                   echo 1000 > "$led/delay_on" 2>/dev/null
                   echo 1000 > "$led/delay_off" 2>/dev/null
-                  break # Chỉ bật 1 màu, ưu tiên Vàng
+                  break
               fi
           done
 
@@ -113,7 +111,7 @@ jobs:
           exit 0
           EOF
 
-          # 5. NÚT RESET: Nhấn 3 lần, mỗi lần cách nhau 1s
+          # 5. Xử lý nút Reset 3 lần liên tục (Mỗi nhịp <= 1s)
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
@@ -142,7 +140,6 @@ jobs:
 
           if [ "$COUNT" -ge 3 ]; then
               rm -f "$COUNTER_FILE" "$TIMESTAMP_FILE"
-              # Chớp đèn thật nhanh để báo hiệu đã nhận lệnh Wipe
               for led in /sys/class/leds/*; do
                   echo timer > "$led/trigger" 2>/dev/null
                   echo 80 > "$led/delay_on" 2>/dev/null
@@ -152,7 +149,7 @@ jobs:
           fi
           EOF
 
-          # 6. GIAO DIỆN WEB HTML (Giữ nguyên như đã tối ưu)
+          # 6. Giao diện Web HTML
           cat << 'EOF' > files/www/index.html
           <!DOCTYPE html>
           <html lang="vi">
@@ -191,7 +188,7 @@ jobs:
 
               <div class="card">
                   <h3>Khôi phục gốc</h3>
-                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên thân router 3 lần (cách nhau 1s) hoặc nhấn nút bên dưới:</p>
+                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên router 3 lần (cách nhau 1s) hoặc bấm nút dưới:</p>
                   <button class="danger" onclick="resetConfig()">Reset về mặc định</button>
               </div>
 
@@ -256,7 +253,7 @@ jobs:
           fi
           EOF
 
-          # 8. Backend CGI: Đổi cấu hình Wi-Fi + Lưu flash
+          # 8. Backend CGI: Lưu cấu hình Wi-Fi
           cat << 'EOF' > files/www/cgi-bin/wifi.cgi
           #!/bin/sh
           echo "Content-type: text/plain"
@@ -284,7 +281,6 @@ jobs:
           echo "Content-type: text/plain"
           echo ""
           echo "OK"
-          # Chớp đèn nhanh từ Web
           for led in /sys/class/leds/*; do
               echo timer > "$led/trigger" 2>/dev/null
               echo 80 > "$led/delay_on" 2>/dev/null
