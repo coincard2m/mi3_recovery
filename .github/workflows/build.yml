@@ -1,4 +1,4 @@
-name: Build Mi3 Rescue PoC
+name: Build Mi3 Rescue PoC (Stable)
 
 on:
   workflow_dispatch:
@@ -22,34 +22,28 @@ jobs:
           sh dl_toolchain.sh
           echo "$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin" >> $GITHUB_PATH
 
-      - name: Build Dropbear Static
+      - name: Build Dropbear SSH (Static)
         run: |
           git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
           cd ~/dropbear_src
-          autoconf
-          autoheader
+          autoconf && autoheader
           ./configure \
             --host=mipsel-linux-uclibc \
-            --disable-zlib \
-            --disable-syslog \
-            --disable-lastlog \
-            --disable-utmp \
-            --disable-wtmp \
-            CC=mipsel-linux-uclibc-gcc \
-            LDFLAGS="-static"
+            --disable-zlib --disable-syslog --disable-lastlog --disable-utmp --disable-wtmp \
+            CC=mipsel-linux-uclibc-gcc LDFLAGS="-static"
           make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
 
-      - name: Build Busybox Static tu nguon Padavan
+      - name: Build MTD Utils cho MT7620 (Static)
+        run: |
+          cd ~/rt-n56u/trunk/user/mtd_write
+          make CC=mipsel-linux-uclibc-gcc LDFLAGS="-static"
+          mkdir -p ~/tools_bin
+          cp mtd_write ~/tools_bin/mtd
+
+      - name: Build Busybox (Static)
         run: |
           cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
-
-          if [ -f ../busybox.config ]; then
-            cp ../busybox.config .config
-          elif [ -f configs/mips_defconfig ]; then
-            cp configs/mips_defconfig .config
-          else
-            make ARCH=mips defconfig
-          fi
+          cp configs/mips_defconfig .config 2>/dev/null || make ARCH=mips defconfig
 
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config
@@ -59,63 +53,137 @@ jobs:
           yes "" | make ARCH=mips oldconfig
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
 
-      - name: Chuan bi Initramfs Rootfs
+      - name: Chuan bi He sinh thai Initramfs (Rootfs)
         run: |
-          mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc,mnt,tmp,var,root}
+          mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc/Wireless/RT2860,mnt,tmp,var/run,root,www/cgi-bin}
 
-          cp init ~/initramfs_root/init
-          chmod +x ~/initramfs_root/init
-          cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
-
+          # 1. Cai BusyBox vao Rootfs
           cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
           make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
+          # 2. Chep Dropbear va MTD vao rootfs
           cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
           cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
-          chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey
+          cp ~/tools_bin/mtd ~/initramfs_root/sbin/mtd
+          chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey ~/initramfs_root/sbin/mtd
 
-      - name: Compile Kernel va tao uImage Recovery
+          # 3. Tao file cau hinh Wi-Fi (SSID: Mi3_recovery / Pass: 1234567890)
+          cat << 'EOF' > ~/initramfs_root/etc/Wireless/RT2860/RT2860_default_v24.dat
+          Default
+          CountryRegion=5
+          CountryRegionABand=7
+          CountryCode=VN
+          BssidNum=1
+          SSID1=Mi3_recovery
+          WirelessMode=9
+          TxRate=0
+          Channel=6
+          BasicRate=15
+          BeaconPeriod=100
+          TxPower=100
+          BGProtection=0
+          TxPreamble=0
+          RTSThreshold=2347
+          FragThreshold=2346
+          TxBurst=1
+          PktAggregate=1
+          TurboRate=0
+          WmmCapable=1
+          AuthMode=WPA2PSK
+          EncrypType=AES
+          WPAPSK1=1234567890
+          DefaultKeyID=1
+          HT_HTC=0
+          HT_RDG=0
+          HT_LinkAdapt=0
+          HT_OpMode=0
+          HT_MpduDensity=5
+          HT_EXTCHA=0
+          HT_BW=1
+          HT_AutoBA=1
+          HT_BADecline=0
+          HT_AMSDU=0
+          HT_BAWinSize=64
+          HT_GI=1
+          HT_MCS=33
+          EOF
+
+          # 4. Cau hinh cap IP dong (DHCP Server)
+          cat << 'EOF' > ~/initramfs_root/etc/udhcpd.conf
+          start 192.168.1.100
+          end 192.168.1.200
+          interface ra0
+          remaining yes
+          opt subnet 255.255.255.0
+          opt router 192.168.1.1
+          opt dns 192.168.1.1
+          opt lease 86400
+          EOF
+
+          # 5. Tao script khoi dong /init
+          cat << 'EOF' > ~/initramfs_root/init
+          #!/bin/sh
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          mount -t devtmpfs none /dev
+          mount -t tmpfs -o size=64M tmpfs /tmp
+          mount -t tmpfs tmpfs /var
+
+          # Loopback & Mang day
+          ifconfig lo 127.0.0.1 up
+          ifconfig eth2 192.168.1.1 netmask 255.255.255.0 up 2>/dev/null || true
+
+          # Khoi chay Wi-Fi 2.4GHz MT7620
+          ifconfig ra0 192.168.1.1 netmask 255.255.255.0 up
+          udhcpd /etc/udhcpd.conf
+
+          # Khoi tao SSH Dropbear
+          mkdir -p /etc/dropbear
+          [ ! -f /etc/dropbear/dropbear_rsa_host_key ] && dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+          echo "root:x:0:0:root:/root:/bin/sh" > /etc/passwd
+          echo "root:$1$O5P$9.bJzMhE7H.:19000:0:99999:7:::" > /etc/shadow
+          dropbear -p 22
+
+          # Web Server Busybox
+          httpd -h /www
+
+          exec /bin/sh
+          EOF
+          chmod +x ~/initramfs_root/init
+
+      - name: Compile Kernel 3.4.x & Dong goi uImage
         run: |
           cd ~/rt-n56u/trunk/linux-3.4.x
 
-          # Su dung config goc cua Mi-3 tren Padavan
-          if [ -f ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config ]; then
-            cp ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config .config
-          elif [ -f arch/mips/configs/ramips_defconfig ]; then
-            cp arch/mips/configs/ramips_defconfig .config
-          else
-            make ARCH=mips defconfig
-          fi
+          cp ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config .config
 
-          # Tich hop initramfs truc tiep vao Kernel
           scripts/config --enable CONFIG_BLK_DEV_INITRD
           scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
           scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
 
-          # Bat driver mang va Wi-Fi SoC MT7620
-          scripts/config --enable CONFIG_RAETH
-          scripts/config --enable CONFIG_RT2860V2_AP
-
-          # Tat Hardware NAT va PPP de tranh loi thieu ra_nat.h khi build stand-alone
+          # Tat cac module thua tranh loi
           scripts/config --disable CONFIG_RA_HW_NAT
           scripts/config --disable CONFIG_PPP
           scripts/config --disable CONFIG_PPPOE
+          scripts/config --disable CONFIG_PPPOL2TP
+          scripts/config --disable CONFIG_PPTP
 
-          yes "" | make ARCH=mips oldconfig
+          # Bat driver Wi-Fi MT7620
+          scripts/config --enable CONFIG_RT2860V2_AP
+          scripts/config --enable CONFIG_RT2860V2_STA
 
-          # Compile kernel vmlinux
+          yes "" | make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- oldconfig
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
-          # Dong goi thanh uImage
           mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
           lzma -9 -f -k ~/vmlinux.bin
           mkimage -A mips -O linux -T kernel -C lzma \
             -a 0x80000000 -e 0x80000000 \
-            -n "Mi3_Recovery_PoC" \
+            -n "Mi3_recovery" \
             -d ~/vmlinux.bin.lzma $GITHUB_WORKSPACE/uImage_recovery
 
-      - name: Luu tru artifact uImage_recovery
+      - name: Luu tru ban Build
         uses: actions/upload-artifact@v4
         with:
           name: uImage_recovery
