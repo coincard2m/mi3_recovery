@@ -39,24 +39,26 @@ jobs:
             LDFLAGS="-static"
           make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
 
-      - name: Build Busybox Static tu nguon san co cua Padavan
+      - name: Build Busybox Static tu nguon chinh thuc
         run: |
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
-          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
+          # Clone truc tiep ma nguon BusyBox on dinh tu official mirror
+          git clone --depth=1 --branch 1_36_stable git://busybox.net/busybox.git ~/busybox_src
+          cd ~/busybox_src
 
-          # Tao file .config neu chua ton tai
-          if [ ! -f .config ]; then
-            make defconfig ARCH=mips
-          fi
+          # Tao config mac dinh
+          make ARCH=mips defconfig
 
-          # Bat che do build static
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config || true
+          # Bat CONFIG_STATIC va tat cac module mang de xung dot voi uClibc
+          scripts/config --enable CONFIG_STATIC
+          scripts/config --disable CONFIG_FEATURE_NSLOOKUP_BIG
+          scripts/config --disable CONFIG_FEATURE_INETD_RPC
 
-          # Bien dich Busybox
+          # Bien dich va cai dat ra mot thu muc rieng
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
+          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
-      - name: Chuan bi cay thu muc Initramfs Rootfs
+      - name: Chuan bi Initramfs Rootfs
         run: |
           mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc,mnt,tmp,var,root}
 
@@ -64,10 +66,6 @@ jobs:
           cp init ~/initramfs_root/init
           chmod +x ~/initramfs_root/init
           cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
-
-          # Cai dat BusyBox vao Initramfs
-          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
-          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
           # Copy Dropbear static vao Initramfs
           cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
@@ -95,7 +93,7 @@ jobs:
           # Compile kernel vmlinux
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
-          # Boc file uImage qua LZMA
+          # Dong goi thanh uImage
           mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
           lzma -9 -f -k ~/vmlinux.bin
           mkimage -A mips -O linux -T kernel -C lzma \
