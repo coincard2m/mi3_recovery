@@ -20,10 +20,11 @@ jobs:
           git clone --depth=1 https://github.com/hanwckf/rt-n56u.git ~/rt-n56u
           cd ~/rt-n56u/toolchain-mipsel
           sh dl_toolchain.sh
+          # Set bien PATH toan cuc cho tat ca cac step tiep theo
+          echo "$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin" >> $GITHUB_PATH
 
       - name: Build Dropbear Static
         run: |
-          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
           cd ~/dropbear_src
           autoconf
@@ -41,7 +42,6 @@ jobs:
 
       - name: Build Busybox Static tu nguon Padavan
         run: |
-          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
 
           # Su dung file config co san cua Padavan
@@ -59,10 +59,10 @@ jobs:
           sed -i 's/CONFIG_FEATURE_INETD_RPC=y/# CONFIG_FEATURE_INETD_RPC is not set/' .config
           sed -i 's/CONFIG_PAM=y/# CONFIG_PAM is not set/' .config
 
-          # Tu dong ap dung config khong hoi prompt
+          # Tu dong ap dung config
           yes "" | make ARCH=mips oldconfig
 
-          # Bien dich
+          # Bien dich Busybox
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
 
       - name: Chuan bi Initramfs Rootfs
@@ -85,7 +85,6 @@ jobs:
 
       - name: Compile Kernel va tao uImage Recovery
         run: |
-          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
           cd ~/rt-n56u/trunk/linux-3.4.x
 
           # Su dung cau hinh kernel mac dinh
@@ -101,7 +100,7 @@ jobs:
           scripts/config --enable CONFIG_RAETH
           scripts/config --enable CONFIG_RT2860V2_AP
 
-          # Compile vmlinux
+          # Compile kernel vmlinux
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
 
           # Dong goi thanh uImage
