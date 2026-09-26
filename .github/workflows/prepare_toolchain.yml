@@ -1,0 +1,75 @@
+name: Prepare Toolchain & Cache for Mi3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prepare:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Cai dat moi truong build co ban
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get update -qq
+          sudo apt-get install -yqq build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
+            libz-dev patch python3 python2.7 unzip zlib1g-dev libssl-dev subversion flex uglifyjs git-core \
+            gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx \
+            libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf \
+            wget curl swig rsync
+          sudo apt-get clean
+
+      - name: Clone Lean OpenWrt (Lede) Source
+        run: |
+          git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
+          cd openwrt
+          # Chi giu lai package can thiet, loai bo luci/telephony de giam tai
+          sed -i 's/^src-git luci/#src-git luci/' feeds.conf.default
+          sed -i 's/^src-git routing/#src-git routing/' feeds.conf.default
+          sed -i 's/^src-git telephony/#src-git telephony/' feeds.conf.default
+          ./scripts/feeds update packages
+          ./scripts/feeds install -p packages uhttpd libustream-mbedtls ca-bundle
+
+      - name: Khoi tao cau hinh toi gian Target MT7620
+        run: |
+          cd openwrt
+          cat << 'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7620=y
+          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
+          CONFIG_TARGET_ROOTFS_INITRAMFS=y
+
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_mtd=y
+          CONFIG_PACKAGE_opkg=y
+          CONFIG_PACKAGE_libustream-mbedtls=y
+          CONFIG_PACKAGE_ca-bundle=y
+          EOF
+          make defconfig
+
+      - name: Tai truoc toan bo ma nguon dependencies
+        run: |
+          cd openwrt
+          make download -j8
+          find dl -size -1024c -exec rm -f {} \;
+
+      - name: Bien dich Tools & Toolchain (Cross-Compiler GCC)
+        run: |
+          cd openwrt
+          # Compile host tools
+          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
+          # Compile cross toolchain (GCC cho MIPS mt7620)
+          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+
+      - name: Luu Toolchain vao GitHub Cache
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/toolchain-*
+            openwrt/dl
+          key: mi3-toolchain-${{ hashFiles('openwrt/.config') }}
