@@ -1,56 +1,19 @@
-name: Build Mi3 Rescue PoC
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cai dat moi truong build
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev gawk git subversion libssl-dev u-boot-tools file wget libelf-dev zlib1g-dev flex bison autoconf
-
-      - name: Lay source Padavan va Toolchain
-        run: |
-          git clone --depth=1 https://github.com/hanwckf/rt-n56u.git ~/rt-n56u
-          cd ~/rt-n56u/toolchain-mipsel
-          sh dl_toolchain.sh
-
-      - name: Build Dropbear Static tu nguon Dropbear
+- name: Build Busybox Static tu nguon san co cua Padavan
         run: |
           export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
-          git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
-          cd ~/dropbear_src
-          autoconf
-          autoheader
-          ./configure \
-            --host=mipsel-linux-uclibc \
-            --disable-zlib \
-            --disable-syslog \
-            --disable-lastlog \
-            --disable-utmp \
-            --disable-wtmp \
-            CC=mipsel-linux-uclibc-gcc \
-            LDFLAGS="-static"
-          make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
+          # Di vao dung thu muc ma nguon thuc su cua Busybox trong Padavan
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
 
-      - name: Build Busybox Static tu nguon san co cua Padavan
-        run: |
-          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
-          cd ~/rt-n56u/trunk/user/busybox
+          # Neu chua co .config thi copy tu file mau cua Padavan hoac make defconfig
+          if [ ! -f .config ]; then
+            make defconfig ARCH=mips
+          fi
 
-          # Su dung cau hinh mac dinh san co cua Padavan cho router
-          make defconfig
-
-          # Bat che do build static de chay doc lap tren Initramfs khong can copy them thu vien .so
+          # Bat che do static de khong can phu thuoc thu vien .so ben ngoai
           sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config || true
 
-          # Compile BusyBox bang chinh Toolchain MIPS
+          # Bien dich Busybox
           make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
 
       - name: Chuan bi cay thu muc Initramfs Rootfs
@@ -63,45 +26,10 @@ jobs:
           cp RT2860_default_v24.dat ~/initramfs_root/RT2860_default_v24.dat
 
           # Cai dat BusyBox vua compile vao Initramfs
-          cd ~/rt-n56u/trunk/user/busybox
+          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
           make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
 
           # Copy Dropbear static vao Initramfs
           cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
           cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
           chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey
-
-      - name: Compile Kernel va tao uImage Recovery
-        run: |
-          export PATH="$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin:$PATH"
-          cd ~/rt-n56u/trunk/linux-3.4.x
-
-          # Su dung cau hinh kernel mac dinh
-          cp arch/mips/configs/rt-n56u_defconfig .config 2>/dev/null || make defconfig ARCH=mips
-
-          # Tich hop initramfs truc tiep vao Kernel
-          scripts/config --enable CONFIG_BLK_DEV_INITRD
-          scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
-          scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
-          scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
-
-          # Bat driver mang day va driver Wi-Fi noi bo MT7620
-          scripts/config --enable CONFIG_RAETH
-          scripts/config --enable CONFIG_RT2860V2_AP
-
-          # Compile vmlinux
-          make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
-
-          # Dong goi thanh uImage
-          mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
-          lzma -9 -f -k ~/vmlinux.bin
-          mkimage -A mips -O linux -T kernel -C lzma \
-            -a 0x80000000 -e 0x80000000 \
-            -n "Mi3_Recovery_PoC" \
-            -d ~/vmlinux.bin.lzma $GITHUB_WORKSPACE/uImage_recovery
-
-      - name: Luu tru artifact uImage_recovery
-        uses: actions/upload-artifact@v4
-        with:
-          name: uImage_recovery
-          path: uImage_recovery
