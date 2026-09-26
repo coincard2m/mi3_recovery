@@ -1,4 +1,4 @@
-name: Build Mi3 Rescue PoC (Stable)
+name: Build Mi3 Rescue TWRP-Style (OpenWrt)
 
 on:
   workflow_dispatch:
@@ -7,190 +7,307 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Cai dat moi truong build
+      - name: Cai dat moi truong ImageBuilder
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libncurses-dev gawk git subversion libssl-dev u-boot-tools file wget libelf-dev zlib1g-dev flex bison autoconf
+          sudo apt-get install -y build-essential libncurses-dev gawk git subversion libssl-dev file wget libelf-dev zlib1g-dev python3 unzip
 
-      - name: Lay source Padavan va Toolchain
+      - name: Tai OpenWrt ImageBuilder (23.05.3 - ramips/mt7620)
         run: |
-          git clone --depth=1 https://github.com/hanwckf/rt-n56u.git ~/rt-n56u
-          cd ~/rt-n56u/toolchain-mipsel
-          sh dl_toolchain.sh
-          echo "$HOME/rt-n56u/toolchain-mipsel/toolchain-3.4.x/bin" >> $GITHUB_PATH
+          wget https://downloads.openwrt.org/releases/23.05.3/targets/ramips/mt7620/openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64.tar.xz
+          tar -xvf openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64.tar.xz
+          mv openwrt-imagebuilder-23.05.3-ramips-mt7620.Linux-x86_64 imagebuilder
 
-      - name: Build Dropbear SSH (Static)
+      - name: Tich hop: Luu Config, Web UI, Đèn Breathing & Reset 3 Lan
         run: |
-          git clone --depth=1 https://github.com/mkj/dropbear.git ~/dropbear_src
-          cd ~/dropbear_src
-          autoconf && autoheader
-          ./configure \
-            --host=mipsel-linux-uclibc \
-            --disable-zlib --disable-syslog --disable-lastlog --disable-utmp --disable-wtmp \
-            CC=mipsel-linux-uclibc-gcc LDFLAGS="-static"
-          make -j$(nproc) PROGRAMS="dropbear dropbearkey" MULTI=0
+          cd imagebuilder
+          mkdir -p files/etc/config
+          mkdir -p files/etc/hotplug.d/button
+          mkdir -p files/usr/sbin
+          mkdir -p files/www/cgi-bin
 
-      - name: Build MTD Utils cho MT7620 (Static)
-        run: |
-          cd ~/rt-n56u/trunk/user/mtd_write
-          mipsel-linux-uclibc-gcc -static -O2 \
-            -I. \
-            -I$HOME/rt-n56u/trunk/linux-3.4.x/include \
-            -I$HOME/rt-n56u/trunk/user/shared/include \
-            mtd.c -o mtd_write
-          mkdir -p ~/tools_bin
-          cp mtd_write ~/tools_bin/mtd
+          # 1. Cấu hình mạng LAN tĩnh (192.168.1.1)
+          cat << 'EOF' > files/etc/config/network
+          config interface 'loopback'
+                  option device 'lo'
+                  option proto 'static'
+                  option ipaddr '127.0.0.1'
+                  option netmask '255.0.0.0'
 
-      - name: Build Busybox (Static)
-        run: |
-          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
-          cp configs/mips_defconfig .config 2>/dev/null || make ARCH=mips defconfig
-
-          sed -i 's/# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          sed -i 's/CONFIG_STATIC=n/CONFIG_STATIC=y/' .config
-          sed -i 's/CONFIG_FEATURE_INETD_RPC=y/# CONFIG_FEATURE_INETD_RPC is not set/' .config
-          sed -i 's/CONFIG_PAM=y/# CONFIG_PAM is not set/' .config
-
-          yes "" | make ARCH=mips oldconfig
-          make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc-
-
-      - name: Chuan bi He sinh thai Initramfs (Rootfs)
-        run: |
-          mkdir -p ~/initramfs_root/{bin,sbin,usr/bin,usr/sbin,dev,proc,sys,etc/Wireless/RT2860,mnt,tmp,var/run,root,www/cgi-bin}
-
-          # 1. Cài BusyBox vào Rootfs
-          cd ~/rt-n56u/trunk/user/busybox/busybox-1.24.x
-          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- CONFIG_PREFIX=~/initramfs_root install
-
-          # 2. Chép Dropbear và MTD vào rootfs
-          cp ~/dropbear_src/dropbear ~/initramfs_root/usr/sbin/
-          cp ~/dropbear_src/dropbearkey ~/initramfs_root/usr/bin/
-          cp ~/tools_bin/mtd ~/initramfs_root/sbin/mtd
-          chmod +x ~/initramfs_root/usr/sbin/dropbear ~/initramfs_root/usr/bin/dropbearkey ~/initramfs_root/sbin/mtd
-
-          # 3. Cấu hình Wi-Fi (SSID: Mi3_recovery / Pass: 1234567890)
-          cat << 'EOF' > ~/initramfs_root/etc/Wireless/RT2860/RT2860_default_v24.dat
-          Default
-          CountryRegion=5
-          CountryRegionABand=7
-          CountryCode=VN
-          BssidNum=1
-          SSID1=Mi3_recovery
-          WirelessMode=9
-          TxRate=0
-          Channel=6
-          BasicRate=15
-          BeaconPeriod=100
-          TxPower=100
-          BGProtection=0
-          TxPreamble=0
-          RTSThreshold=2347
-          FragThreshold=2346
-          TxBurst=1
-          PktAggregate=1
-          TurboRate=0
-          WmmCapable=1
-          AuthMode=WPA2PSK
-          EncrypType=AES
-          WPAPSK1=1234567890
-          DefaultKeyID=1
-          HT_HTC=0
-          HT_RDG=0
-          HT_LinkAdapt=0
-          HT_OpMode=0
-          HT_MpduDensity=5
-          HT_EXTCHA=0
-          HT_BW=1
-          HT_AutoBA=1
-          HT_BADecline=0
-          HT_AMSDU=0
-          HT_BAWinSize=64
-          HT_GI=1
-          HT_MCS=33
+          config interface 'lan'
+                  option device 'br-lan'
+                  option proto 'static'
+                  option ipaddr '192.168.1.1'
+                  option netmask '255.255.255.0'
           EOF
 
-          # 4. Cấu hình DHCP Server cấp IP
-          cat << 'EOF' > ~/initramfs_root/etc/udhcpd.conf
-          start 192.168.1.100
-          end 192.168.1.200
-          interface ra0
-          remaining yes
-          opt subnet 255.255.255.0
-          opt router 192.168.1.1
-          opt dns 192.168.1.1
-          opt lease 86400
+          # 2. Cấu hình Wi-Fi gốc (Mi3_recovery / 1234567890)
+          cat << 'EOF' > files/etc/config/wireless
+          config wifi-device 'radio0'
+                  option type 'mac80211'
+                  option path '10180000.wmac'
+                  option channel '6'
+                  option band '2g'
+                  option htmode 'HT40'
+                  option disabled '0'
+
+          config wifi-iface 'default_radio0'
+                  option device 'radio0'
+                  option network 'lan'
+                  option mode 'ap'
+                  option ssid 'Mi3_recovery'
+                  option encryption 'psk2'
+                  option key '1234567890'
           EOF
 
-          # 5. Tạo script khởi động /init
-          cat << 'EOF' > ~/initramfs_root/init
+          # 3. Quản lý lưu/khôi phục Config đuôi Flash (Offset 3.5MB)
+          cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
-          mount -t proc none /proc
-          mount -t sysfs none /sys
-          mount -t devtmpfs none /dev
-          mount -t tmpfs -o size=64M tmpfs /tmp
-          mount -t tmpfs tmpfs /var
+          REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
+          [ -z "$REC_DEV" ] && exit 1
+          MTD_PATH="/dev/${REC_DEV}"
 
-          ifconfig lo 127.0.0.1 up
-          ifconfig eth2 192.168.1.1 netmask 255.255.255.0 up 2>/dev/null || true
-
-          ifconfig ra0 192.168.1.1 netmask 255.255.255.0 up
-          udhcpd /etc/udhcpd.conf
-
-          mkdir -p /etc/dropbear
-          [ ! -f /etc/dropbear/dropbear_rsa_host_key ] && dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
-          echo "root:x:0:0:root:/root:/bin/sh" > /etc/passwd
-          echo "root:$1$O5P$9.bJzMhE7H.:19000:0:99999:7:::" > /etc/shadow
-          dropbear -p 22
-
-          httpd -h /www
-
-          exec /bin/sh
+          case "$1" in
+              save)
+                  cd /etc/config
+                  tar -czf /tmp/backup_cfg.tar.gz wireless network 2>/dev/null
+                  dd if=/tmp/backup_cfg.tar.gz of=$MTD_PATH bs=64k seek=56 conv=sync 2>/dev/null
+                  rm -f /tmp/backup_cfg.tar.gz
+                  ;;
+              load)
+                  dd if=$MTD_PATH of=/tmp/restore_cfg.tar.gz bs=64k skip=56 count=2 2>/dev/null
+                  if tar -tzf /tmp/restore_cfg.tar.gz >/dev/null 2>&1; then
+                      tar -xzf /tmp/restore_cfg.tar.gz -C /etc/config/
+                      wifi reload 2>/dev/null
+                  fi
+                  rm -f /tmp/restore_cfg.tar.gz
+                  ;;
+              reset)
+                  dd if=/dev/zero of=$MTD_PATH bs=64k seek=56 count=2 conv=sync 2>/dev/null
+                  sync
+                  reboot
+                  ;;
+          esac
           EOF
-          chmod +x ~/initramfs_root/init
+          chmod +x files/usr/sbin/cfg_manager
 
-      - name: Compile Kernel 3.4.x & Dong goi uImage
+          # 4. KHỞI ĐỘNG: Bật đèn nhịp thở (Breathing Vàng) & Nạp config
+          cat << 'EOF' > files/etc/rc.local
+          # Tắt tất cả các đèn trước
+          for led in /sys/class/leds/*; do
+              echo none > "$led/trigger" 2>/dev/null
+              echo 0 > "$led/brightness" 2>/dev/null
+          done
+
+          # Tìm và bật đèn Vàng/Cam chớp chậm như nhịp thở
+          for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*red*; do
+              if [ -d "$led" ]; then
+                  echo timer > "$led/trigger" 2>/dev/null
+                  echo 1000 > "$led/delay_on" 2>/dev/null
+                  echo 1000 > "$led/delay_off" 2>/dev/null
+                  break # Chỉ bật 1 màu, ưu tiên Vàng
+              fi
+          done
+
+          /usr/sbin/cfg_manager load &
+          exit 0
+          EOF
+
+          # 5. NÚT RESET: Nhấn 3 lần, mỗi lần cách nhau 1s
+          cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
+          #!/bin/sh
+          [ "$BUTTON" = "reset" ] || exit 0
+          [ "$ACTION" = "released" ] || exit 0
+
+          COUNTER_FILE="/tmp/reset_click_count"
+          TIMESTAMP_FILE="/tmp/reset_last_time"
+
+          NOW=$(cut -d. -f1 /proc/uptime)
+          LAST=0
+          COUNT=0
+
+          [ -f "$TIMESTAMP_FILE" ] && LAST=$(cat "$TIMESTAMP_FILE")
+          [ -f "$COUNTER_FILE" ] && COUNT=$(cat "$COUNTER_FILE")
+
+          DIFF=$((NOW - LAST))
+
+          if [ "$DIFF" -le 1 ]; then
+              COUNT=$((COUNT + 1))
+          else
+              COUNT=1
+          fi
+
+          echo "$NOW" > "$TIMESTAMP_FILE"
+          echo "$COUNT" > "$COUNTER_FILE"
+
+          if [ "$COUNT" -ge 3 ]; then
+              rm -f "$COUNTER_FILE" "$TIMESTAMP_FILE"
+              # Chớp đèn thật nhanh để báo hiệu đã nhận lệnh Wipe
+              for led in /sys/class/leds/*; do
+                  echo timer > "$led/trigger" 2>/dev/null
+                  echo 80 > "$led/delay_on" 2>/dev/null
+                  echo 80 > "$led/delay_off" 2>/dev/null
+              done
+              /usr/sbin/cfg_manager reset
+          fi
+          EOF
+
+          # 6. GIAO DIỆN WEB HTML (Giữ nguyên như đã tối ưu)
+          cat << 'EOF' > files/www/index.html
+          <!DOCTYPE html>
+          <html lang="vi">
+          <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <title>Mi3 TWRP Recovery</title>
+              <style>
+                  body { font-family: sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }
+                  .card { background: white; padding: 15px; border-radius: 8px; max-width: 420px; margin: 0 auto 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+                  h3 { margin-top: 0; color: #1a73e8; }
+                  input { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+                  button { background: #1a73e8; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; font-weight: bold; cursor: pointer; }
+                  button:disabled { background: #ccc; }
+                  .danger { background: #d93025; }
+                  #msg, #wifi-msg { margin-top: 10px; font-size: 14px; font-weight: bold; }
+              </style>
+          </head>
+          <body>
+              <div class="card">
+                  <h3>Cài đặt ROM Offline</h3>
+                  <input type="file" id="romFile" accept=".bin,.trx">
+                  <button id="btnFlash" onclick="flashRom()">Bắt đầu Flash</button>
+                  <div id="msg"></div>
+              </div>
+
+              <div class="card">
+                  <h3>Đổi Cấu Hình Wi-Fi</h3>
+                  <label>Tên Wi-Fi (SSID):</label>
+                  <input type="text" id="ssid" value="Mi3_recovery">
+                  <label>Mật khẩu (tối thiểu 8 ký tự):</label>
+                  <input type="password" id="pass" value="1234567890">
+                  <button onclick="setWifi()">Lưu cấu hình</button>
+                  <div id="wifi-msg"></div>
+              </div>
+
+              <div class="card">
+                  <h3>Khôi phục gốc</h3>
+                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên thân router 3 lần (cách nhau 1s) hoặc nhấn nút bên dưới:</p>
+                  <button class="danger" onclick="resetConfig()">Reset về mặc định</button>
+              </div>
+
+              <script>
+                  async function flashRom() {
+                      const file = document.getElementById('romFile').files[0];
+                      const msg = document.getElementById('msg');
+                      const btn = document.getElementById('btnFlash');
+                      if (!file) return alert('Vui lòng chọn file ROM!');
+
+                      btn.disabled = true;
+                      msg.innerText = 'Đang đẩy ROM lên RAM...';
+
+                      try {
+                          let res = await fetch('/cgi-bin/flash.cgi', { method: 'POST', body: file });
+                          msg.innerText = await res.text();
+                      } catch (e) {
+                          msg.innerText = 'Lỗi kết nối!';
+                      }
+                      btn.disabled = false;
+                  }
+
+                  async function setWifi() {
+                      const ssid = document.getElementById('ssid').value;
+                      const pass = document.getElementById('pass').value;
+                      const msg = document.getElementById('wifi-msg');
+
+                      if (pass.length < 8) return alert('Mật khẩu phải từ 8 ký tự!');
+                      msg.innerText = 'Đang lưu và đổi sóng Wi-Fi...';
+
+                      let res = await fetch('/cgi-bin/wifi.cgi', {
+                          method: 'POST',
+                          body: JSON.stringify({ ssid, pass })
+                      });
+                      msg.innerText = await res.text();
+                  }
+
+                  async function resetConfig() {
+                      if (confirm('Xóa sạch cấu hình đã lưu và khởi động lại?')) {
+                          await fetch('/cgi-bin/reset.cgi');
+                          alert('Router đang khôi phục gốc và khởi động lại!');
+                      }
+                  }
+              </script>
+          </body>
+          </html>
+          EOF
+
+          # 7. Backend CGI: Flash ROM
+          cat << 'EOF' > files/www/cgi-bin/flash.cgi
+          #!/bin/sh
+          echo "Content-type: text/plain"
+          echo ""
+
+          cat > /tmp/firmware.bin
+          if [ -s /tmp/firmware.bin ]; then
+              echo "Đã nhận ROM. Đang tiến hành ghi Flash..."
+              mtd -r write /tmp/firmware.bin firmware >/dev/null 2>&1 &
+              echo "Đang ghi NAND. Router sẽ tự khởi động lại khi hoàn tất!"
+          else
+              echo "Lỗi: Không nhận được file."
+          fi
+          EOF
+
+          # 8. Backend CGI: Đổi cấu hình Wi-Fi + Lưu flash
+          cat << 'EOF' > files/www/cgi-bin/wifi.cgi
+          #!/bin/sh
+          echo "Content-type: text/plain"
+          echo ""
+
+          read -r BODY
+          SSID=$(echo "$BODY" | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p')
+          PASS=$(echo "$BODY" | sed -n 's/.*"pass":"\([^"]*\)".*/\1/p')
+
+          if [ -n "$SSID" ] && [ -n "$PASS" ]; then
+              uci set wireless.default_radio0.ssid="$SSID"
+              uci set wireless.default_radio0.key="$PASS"
+              uci commit wireless
+              wifi reload
+              /usr/sbin/cfg_manager save
+              echo "Đã lưu Wi-Fi mới và áp dụng ngay!"
+          else
+              echo "Lỗi tham số dữ liệu!"
+          fi
+          EOF
+
+          # 9. Backend CGI: Factory Reset
+          cat << 'EOF' > files/www/cgi-bin/reset.cgi
+          #!/bin/sh
+          echo "Content-type: text/plain"
+          echo ""
+          echo "OK"
+          # Chớp đèn nhanh từ Web
+          for led in /sys/class/leds/*; do
+              echo timer > "$led/trigger" 2>/dev/null
+              echo 80 > "$led/delay_on" 2>/dev/null
+              echo 80 > "$led/delay_off" 2>/dev/null
+          done
+          /usr/sbin/cfg_manager reset &
+          EOF
+
+          chmod +x files/www/cgi-bin/*
+
+      - name: Dong goi Firmware Initramfs sieu nhe
         run: |
-          cd ~/rt-n56u/trunk/linux-3.4.x
-
-          # Dùng config chuẩn của Mi-3
-          cp ~/rt-n56u/trunk/configs/boards/MI-3/kernel-3.4.x.config .config
-
-          # Cấu hình Initramfs và định dạng nén đầy đủ để không bị kẹt câu hỏi choice
-          scripts/config --enable CONFIG_BLK_DEV_INITRD
-          scripts/config --set-str CONFIG_INITRAMFS_SOURCE "$HOME/initramfs_root"
-          scripts/config --set-val CONFIG_INITRAMFS_ROOT_UID 0
-          scripts/config --set-val CONFIG_INITRAMFS_ROOT_GID 0
-          scripts/config --enable CONFIG_RD_GZIP
-          scripts/config --disable CONFIG_RD_BZIP2
-          scripts/config --disable CONFIG_RD_LZMA
-          scripts/config --disable CONFIG_RD_XZ
-          scripts/config --disable CONFIG_RD_LZO
-          scripts/config --enable CONFIG_INITRAMFS_COMPRESSION_NONE
-          scripts/config --disable CONFIG_INITRAMFS_COMPRESSION_GZIP
-
-          # Tắt các module lỗi biên dịch độc lập
-          scripts/config --disable CONFIG_RA_HW_NAT
-          scripts/config --disable CONFIG_PPP
-          scripts/config --disable CONFIG_PPPOE
-          scripts/config --disable CONFIG_PPPOL2TP
-          scripts/config --disable CONFIG_PPTP
-
-          # Tắt kiểm tra warning như error của GCC
-          make ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- olddefconfig
-          make -j$(nproc) ARCH=mips CROSS_COMPILE=mipsel-linux-uclibc- vmlinux
-
-          mipsel-linux-uclibc-objcopy -O binary -S vmlinux ~/vmlinux.bin
-          lzma -9 -f -k ~/vmlinux.bin
-          mkimage -A mips -O linux -T kernel -C lzma \
-            -a 0x80000000 -e 0x80000000 \
-            -n "Mi3_recovery" \
-            -d ~/vmlinux.bin.lzma $GITHUB_WORKSPACE/uImage_recovery
+          cd imagebuilder
+          make image PROFILE="xiaomi_mi-router-3" \
+            PACKAGES="uhttpd mtd opkg libustream-mbedtls ca-bundle \
+            -luci -luci-base -luci-ssl \
+            -dnsmasq -firewall4 -nftables -kmod-nft-core \
+            -ppp -ppp-mod-pppoe -kmod-ppp -kmod-pppoe \
+            -odhcp6c -odhcpd-ipv6only -kmod-ipv6 -ip6tables" \
+            FILES="files"
 
       - name: Luu tru ban Build
         uses: actions/upload-artifact@v4
         with:
-          name: uImage_recovery
-          path: uImage_recovery
+          name: Mi3_TWRP_Recovery
+          path: imagebuilder/bin/targets/ramips/mt7620/*-initramfs-kernel.bin
