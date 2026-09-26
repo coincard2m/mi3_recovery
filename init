@@ -1,0 +1,46 @@
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /tmp /var /var/run /var/log /etc/dropbear /etc/Wireless/RT2860
+mount -t devpts devpts /dev/pts
+
+# 1. Tao bridge noi bo br0
+brctl addbr br0 2>/dev/null || true
+ifconfig eth0 0.0.0.0 up 2>/dev/null
+brctl addif br0 eth0 2>/dev/null || true
+
+# 2. Dua file cau hinh va kich hoat song Wi-Fi 2.4GHz
+cp /RT2860_default_v24.dat /etc/Wireless/RT2860/RT2860_default_v24.dat 2>/dev/null
+ifconfig ra0 up 2>/dev/null
+brctl addif br0 ra0 2>/dev/null || true
+
+# Gan IP Gateway cho router
+ifconfig br0 192.168.1.1 netmask 255.255.255.0 up
+
+# 3. Kich hoat DHCP Server cap dai IP gon tu .10 den .50
+cat << 'EOF' > /tmp/udhcpd.conf
+start 192.168.1.10
+end 192.168.1.50
+interface br0
+opt router 192.168.1.1
+opt subnet 255.255.255.0
+opt dns 192.168.1.1
+lease_file /tmp/udhcpd.leases
+EOF
+touch /tmp/udhcpd.leases
+udhcpd /tmp/udhcpd.conf
+
+# 4. Kich hoat Dropbear SSH root khong mat khau
+if [ ! -f /etc/dropbear/dropbear_rsa_host_key ]; then
+    dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key 2>/dev/null
+fi
+echo "root::0:0:root:/root:/bin/sh" > /etc/passwd
+dropbear -R -B -p 22 2>/dev/null
+
+echo "=========================================================="
+echo "   RECOVERY READY: SSID 'Mi3_Recovery' (Pass: 1234567890)"
+echo "   SSH: root@192.168.1.1 (Khong mat khau)                 "
+echo "=========================================================="
+
+exec /bin/sh
