@@ -1,4 +1,4 @@
-name: Build Mi3 TWRP Super Minimal
+name: Build Mi3 Recovery Minimal (No Web)
 
 on:
   workflow_dispatch:
@@ -24,25 +24,32 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
           cd openwrt
-          # XOA SAC TOAN BO FEEDS NGOAI - Khong de bat cu package rac nao lot vao
+          # Xoa bo hoan toan feeds va package rác cua Lean de triet tieu loi po2lmo, libselinux
           rm -rf package/feeds feeds.conf.default
           touch feeds.conf.default
-
-          # Xoa chu dong tat ca cac thu muc co nguy co loi SELinux va iwinfo
+          rm -rf package/lean
           rm -rf package/libs/libselinux package/libs/libsepol package/network/utils/iwinfo package/utils/policycoreutils
 
-      - name: Khoi phuc Cache Toolchain (Neu co)
+      - name: Lay ma Hash cua Source de quan ly Cache
+        id: get-hash
+        run: |
+          cd openwrt
+          echo "head_hash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Khoi phuc Cache (Toolchain & Target Packages)
         uses: actions/cache/restore@v4
-        id: cache-toolchain
+        id: cache-build
         with:
           path: |
             openwrt/staging_dir
             openwrt/build_dir/toolchain-*
-          key: mi3-clean-toolchain-v2
+            openwrt/build_dir/target-*
+          key: mi3-build-cache-${{ steps.get-hash.outputs.head_hash }}
           restore-keys: |
-            mi3-clean-toolchain-
+            mi3-build-cache-
+            mi3-toolchain-
 
-      - name: Cau hinh toi gian tuyet doi (Khong Feeds, Initramfs Only)
+      - name: Cau hinh Minimal (Chi dung Core Packages, SSH, LAN, Wi-Fi)
         run: |
           cd openwrt
           cat << 'EOF' > .config
@@ -50,19 +57,23 @@ jobs:
           CONFIG_TARGET_ramips_mt7620=y
           CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-          # Chi build Initramfs chay tren RAM
+          # Chi tao ban Kernel Initramfs vao RAM
           CONFIG_TARGET_ROOTFS_INITRAMFS=y
           # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 
-          # Cong cu co san trong core OpenWrt
+          # Cong cu mang, he thong & SSH
           CONFIG_PACKAGE_mtd=y
           CONFIG_PACKAGE_busybox=y
+          CONFIG_PACKAGE_dropbear=y
 
-          # Tat sach cac goi rac
+          # Driver Wi-Fi MT7620 co ban
+          CONFIG_PACKAGE_kmod-mt76=y
+          CONFIG_PACKAGE_wpad-basic-wolfssl=y
+
+          # Tat sach cac thu vien gay loi
           # CONFIG_PACKAGE_libselinux is not set
           # CONFIG_PACKAGE_libsepol is not set
           # CONFIG_PACKAGE_iwinfo is not set
-          # CONFIG_PACKAGE_libiwinfo is not set
           # CONFIG_PACKAGE_luci is not set
           # CONFIG_PACKAGE_dnsmasq is not set
           # CONFIG_PACKAGE_firewall is not set
@@ -71,27 +82,16 @@ jobs:
           EOF
           make defconfig
 
-      - name: Bien dich Toolchain (Xay dung bo cong cu cot loi)
+      - name: Cai dat Cau hinh He Thong (LAN, Wi-Fi, SSH, Triple Reset & cfg_manager)
         run: |
           cd openwrt
-          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+          mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/etc/dropbear
 
-      # BUOC QUAN TRONG: Luu cache Toolchain NGAY LAP TUC, ke ca cac buoc sau co loi van luu!
-      - name: Luu Cache Toolchain Du Phong
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: |
-            openwrt/staging_dir
-            openwrt/build_dir/toolchain-*
-          key: mi3-clean-toolchain-v2
+          # 1. Mat khau SSH mac dinh la 'root' (hash sha512 Linux chuan)
+          echo 'root:$1$wOSEP9x2$zP86p7aWkM0dK7uF.qS0X/:19000:0:99999:7:::' > files/etc/shadow
+          chmod 600 files/etc/shadow
 
-      - name: Cai dat Web UI, LED, Reset & Script 3.5MB
-        run: |
-          cd openwrt
-          mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/www/cgi-bin
-
-          # LAN 192.168.1.1
+          # 2. Cau hinh mang LAN: 192.168.1.1
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -106,7 +106,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # Wi-Fi Mac Dinh
+          # 3. Wi-Fi Cuu ho phat song tu dong
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -125,30 +125,51 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # cfg_manager offset 3.5MB
+          # 4. Script quan ly config ne Bad Block (Quet nguoc tu Block 31 ve 28)
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
           [ -z "$REC_DEV" ] && exit 1
           MTD_PATH="/dev/${REC_DEV}"
 
+          # Quet nguoc tu block chot cung ve de cach xa Kernel nhat co the
+          CANDIDATE_BLOCKS="31 30 29 28"
+
           case "$1" in
               save)
-                  cd /etc/config
-                  tar -czf /tmp/backup_cfg.tar.gz wireless network 2>/dev/null
-                  dd if=/tmp/backup_cfg.tar.gz of=$MTD_PATH bs=64k seek=56 conv=sync 2>/dev/null
-                  rm -f /tmp/backup_cfg.tar.gz
+                  cd /
+                  tar -czf /tmp/cfg_payload.tar.gz etc/config/wireless etc/config/network etc/shadow 2>/dev/null
+                  SAVED=0
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      if dd if=/tmp/cfg_payload.tar.gz of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null; then
+                          dd if=$MTD_PATH of=/tmp/cfg_verify.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
+                          if tar -tzf /tmp/cfg_verify.tar.gz >/dev/null 2>&1; then
+                              rm -f /tmp/cfg_verify.tar.gz
+                              SAVED=1
+                              break
+                          fi
+                          rm -f /tmp/cfg_verify.tar.gz
+                      fi
+                  done
+                  rm -f /tmp/cfg_payload.tar.gz
+                  [ $SAVED -eq 1 ] && exit 0 || exit 1
                   ;;
               load)
-                  dd if=$MTD_PATH of=/tmp/restore_cfg.tar.gz bs=64k skip=56 count=2 2>/dev/null
-                  if tar -tzf /tmp/restore_cfg.tar.gz >/dev/null 2>&1; then
-                      tar -xzf /tmp/restore_cfg.tar.gz -C /etc/config/
-                      wifi reload 2>/dev/null
-                  fi
-                  rm -f /tmp/restore_cfg.tar.gz
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      dd if=$MTD_PATH of=/tmp/cfg_read.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
+                      if tar -tzf /tmp/cfg_read.tar.gz >/dev/null 2>&1; then
+                          tar -xzf /tmp/cfg_read.tar.gz -C /
+                          rm -f /tmp/cfg_read.tar.gz
+                          wifi reload 2>/dev/null
+                          exit 0
+                      fi
+                      rm -f /tmp/cfg_read.tar.gz
+                  done
                   ;;
               reset)
-                  dd if=/dev/zero of=$MTD_PATH bs=64k seek=56 count=2 conv=sync 2>/dev/null
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      dd if=/dev/zero of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null
+                  done
                   sync
                   reboot
                   ;;
@@ -156,8 +177,9 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # Breathing LED Boot (Dung HTTP server tich hop cua Busybox: httpd)
+          # 5. Boot script: Cap DHCP cho cong LAN + Chay Dropbear SSH + Chop den Amber
           cat << 'EOF' > files/etc/rc.local
+          # Chop den Amber bao hieu dang trong Recovery mode
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
               echo 0 > "$led/brightness" 2>/dev/null
@@ -170,13 +192,28 @@ jobs:
                   break
               fi
           done
+
+          # Doc lai cau hinh tu Flash neu co
           /usr/sbin/cfg_manager load &
-          # Chay Web Server tich hop san trong Busybox (khong can package ngoai)
-          httpd -p 80 -h /www
+
+          # Cap IP DHCP tu dong cho may tinh qua cong LAN
+          cat << 'DHCP' > /tmp/udhcpd.conf
+          start 192.168.1.100
+          end 192.168.1.200
+          interface br-lan
+          option subnet 255.255.255.0
+          option router 192.168.1.1
+          option lease 86400
+          DHCP
+          udhcpd /tmp/udhcpd.conf
+
+          # Khoi dong SSH Dropbear
+          dropbear -p 22
           exit 0
           EOF
+          chmod +x files/etc/rc.local
 
-          # Triple Reset
+          # 6. Nut Triple Reset: Nhan 3 lan trong 1 giay de xoa sach ve goc
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
@@ -205,56 +242,25 @@ jobs:
           fi
           EOF
 
-          # Web UI & CGI
-          cat << 'EOF' > files/www/index.html
-          <!DOCTYPE html>
-          <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Mi3 TWRP</title>
-          <style>body{font-family:sans-serif;background:#eceff1;padding:15px;}.c{background:#fff;padding:15px;border-radius:8px;max-width:400px;margin:0 auto 15px;}input,button{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;}button{background:#1976d2;color:#fff;border:none;border-radius:4px;font-weight:bold;cursor:pointer;}.d{background:#d32f2f;}</style></head>
-          <body>
-          <div class="c"><h3>Cài đặt ROM Offline</h3><input type="file" id="f"><button onclick="flash()">Bắt đầu Flash</button><div id="m1"></div></div>
-          <div class="c"><h3>Cấu hình Wi-Fi</h3><input type="text" id="s" value="Mi3_recovery"><input type="password" id="p" value="1234567890"><button onclick="setWifi()">Lưu cấu hình</button><div id="m2"></div></div>
-          <div class="c"><h3>Khôi phục gốc</h3><button class="d" onclick="rst()">Xóa cài đặt (Reset)</button></div>
-          <script>
-          async function flash(){let f=document.getElementById('f').files[0];if(!f)return alert('Chọn ROM!');document.getElementById('m1').innerText='Đang nạp ROM...';let r=await fetch('/cgi-bin/flash.cgi',{method:'POST',body:f});document.getElementById('m1').innerText=await r.text();}
-          async function setWifi(){let s=document.getElementById('s').value,p=document.getElementById('p').value;if(p.length<8)return alert('Mật khẩu >= 8 ký tự');document.getElementById('m2').innerText='Đang đổi Wi-Fi...';let r=await fetch('/cgi-bin/wifi.cgi',{method:'POST',body:JSON.stringify({ssid:s,pass:p})});document.getElementById('m2').innerText=await r.text();}
-          async function rst(){if(confirm('Khôi phục mặc định?')){await fetch('/cgi-bin/reset.cgi');alert('Router đang khởi động lại!');}}
-          </script></body></html>
-          EOF
-
-          cat << 'EOF' > files/www/cgi-bin/flash.cgi
-          #!/bin/sh
-          echo -e "Content-type: text/plain\r\n\r\n"
-          cat > /tmp/firmware.bin
-          [ -s /tmp/firmware.bin ] && { mtd -r write /tmp/firmware.bin firmware >/dev/null 2>&1 & echo "Đang ghi NAND, router sẽ tự reboot!"; } || echo "Lỗi file!"
-          EOF
-
-          cat << 'EOF' > files/www/cgi-bin/wifi.cgi
-          #!/bin/sh
-          echo -e "Content-type: text/plain\r\n\r\n"
-          read -r B; S=$(echo "$B" | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p'); P=$(echo "$B" | sed -n 's/.*"pass":"\([^"]*\)".*/\1/p')
-          if [ -n "$S" ] && [ -n "$P" ]; then
-              uci set wireless.default_radio0.ssid="$S"
-              uci set wireless.default_radio0.key="$P"
-              uci commit wireless; wifi reload; /usr/sbin/cfg_manager save
-              echo "Đã đổi Wi-Fi thành công!"
-          else echo "Lỗi tham số!"; fi
-          EOF
-
-          cat << 'EOF' > files/www/cgi-bin/reset.cgi
-          #!/bin/sh
-          echo -e "Content-type: text/plain\r\n\r\nOK"
-          /usr/sbin/cfg_manager reset &
-          EOF
-
-          chmod +x files/www/cgi-bin/* files/etc/rc.local
-
       - name: Bien dich Firmware (Initramfs Kernel)
         run: |
           cd openwrt
           make -j$(nproc) || make -j1 V=s
 
+      # BUOC LUU CACHE: Luu lai bat chap thanh cong hay that bai de cuu tien trinh make
+      - name: Luu Cache Build (Cuu tien trinh make)
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/toolchain-*
+            openwrt/build_dir/target-*
+          key: mi3-build-cache-${{ steps.get-hash.outputs.head_hash }}
+
       - name: Luu Artifacts (File Recovery Kernel)
         uses: actions/upload-artifact@v4
+        if: success()
         with:
-          name: Mi3_TWRP_Recovery
+          name: Mi3_Recovery_Kernel
           path: openwrt/bin/targets/ramips/mt7620/*initramfs-kernel.bin
