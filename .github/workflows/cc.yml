@@ -42,27 +42,42 @@ jobs:
           CONFIG_TARGET_ROOTFS_INITRAMFS=y
           # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 
+          # Cong cu he thong & mang co ban
           CONFIG_PACKAGE_mtd=y
           CONFIG_PACKAGE_busybox=y
           CONFIG_PACKAGE_dropbear=y
           CONFIG_PACKAGE_kmod-mt76=y
           CONFIG_PACKAGE_wpad-basic-wolfssl=y
 
+          # Tat sach firewall, ppp de giam kich thuoc kernel initramfs xuong duoi 3MB
+          # CONFIG_PACKAGE_firewall is not set
+          # CONFIG_PACKAGE_ppp is not set
+          # CONFIG_PACKAGE_dnsmasq is not set
+          # CONFIG_PACKAGE_dnsmasq-full is not set
           CONFIG_PACKAGE_kmod-ipt-core=n
           CONFIG_PACKAGE_kmod-ipt-nat=n
           CONFIG_PACKAGE_kmod-ipt-nat6=n
           CONFIG_PACKAGE_kmod-nf-nathelper-extra=n
           CONFIG_PACKAGE_kmod-ipv6=n
+          CONFIG_PACKAGE_kmod-usb-core=n
+          CONFIG_PACKAGE_kmod-usb2=n
+          CONFIG_PACKAGE_kmod-usb-ohci=n
           EOF
           make defconfig
 
-      - name: Bien dich Toolchain va Packages
+      - name: Bien dich Firmware va Kernel
         run: |
           cd openwrt
-          make -j$(nproc) || make -j1 V=s
+          echo "=== TIEN HANH BIEN DICH ==="
+          make -j$(nproc) || {
+              echo "=== LOI XAY RA: IN CHI TIET TAI TARGET IMAGE ==="
+              make target/install V=s -j1 || true
+              exit 1
+          }
 
-      - name: Dong goi vao tar.zst
+      - name: Dong goi Toolchain va Artifacts
         run: |
+          # Nén toàn bộ những gì đã compile để lưu vĩnh viễn
           tar -I 'zstd -T0 -1' -cf mi3_toolchain_cache.tar.zst \
             openwrt/staging_dir \
             openwrt/build_dir/toolchain-* \
@@ -73,7 +88,7 @@ jobs:
         with:
           tag_name: toolchain-v1
           name: "Mi3 Toolchain & Build Artifacts"
-          body: "Toolchain và Packages đã biên dịch hoàn tất cho Xiaomi Mi WiFi 3 (MT7620)."
+          body: "Bản build thành công cho Xiaomi Mi WiFi 3."
           draft: false
           prerelease: false
           files: |
