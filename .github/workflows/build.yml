@@ -1,4 +1,4 @@
-name: Build Mi3 TWRP Rescue (Lean Lede Base)
+name: Fast Build Mi3 TWRP (Using Cache)
 
 on:
   workflow_dispatch:
@@ -23,22 +23,66 @@ jobs:
             wget curl swig rsync
           sudo apt-get clean
 
-      - name: Clone Lean OpenWrt (Lede) Source
+      - name: Clone Lean OpenWrt Source
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
           cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          sed -i 's/^src-git luci/#src-git luci/' feeds.conf.default
+          sed -i 's/^src-git routing/#src-git routing/' feeds.conf.default
+          sed -i 's/^src-git telephony/#src-git telephony/' feeds.conf.default
+          ./scripts/feeds update packages
+          ./scripts/feeds install -p packages uhttpd libustream-mbedtls ca-bundle
 
-      - name: Cau hinh Rootfs (Web UI, Breathing LED, Reset 3 lan, Config Offset)
+      - name: Khoi phuc Toolchain tu Cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/toolchain-*
+            openwrt/dl
+          key: mi3-toolchain-
+          restore-keys: |
+            mi3-toolchain-
+
+      - name: Cau hinh toi gian & Khac phuc loi iwinfo
         run: |
           cd openwrt
-          mkdir -p files/etc/config
-          mkdir -p files/etc/hotplug.d/button
-          mkdir -p files/usr/sbin
-          mkdir -p files/www/cgi-bin
+          cat << 'EOF' > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7620=y
+          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-          # 1. Mang LAN tinh 192.168.1.1
+          # Chi build Kernel Initramfs vao RAM
+          CONFIG_TARGET_ROOTFS_INITRAMFS=y
+          # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
+
+          # Cong cu bat buoc
+          CONFIG_PACKAGE_uhttpd=y
+          CONFIG_PACKAGE_mtd=y
+          CONFIG_PACKAGE_opkg=y
+          CONFIG_PACKAGE_libustream-mbedtls=y
+          CONFIG_PACKAGE_ca-bundle=y
+
+          # Tat hoan toan iwinfo va cac phu thuoc gay loi
+          # CONFIG_PACKAGE_iwinfo is not set
+          # CONFIG_PACKAGE_libiwinfo is not set
+          # CONFIG_PACKAGE_libiwinfo-lua is not set
+          # CONFIG_PACKAGE_lua is not set
+          # CONFIG_PACKAGE_luci is not set
+          # CONFIG_PACKAGE_dnsmasq is not set
+          # CONFIG_PACKAGE_firewall is not set
+          # CONFIG_PACKAGE_firewall4 is not set
+          # CONFIG_PACKAGE_ppp is not set
+          # CONFIG_PACKAGE_kmod-ipv6 is not set
+          EOF
+          make defconfig
+
+      - name: Cai dat Web UI, Breathing LED, Phim Reset va Script Offset 3.5MB
+        run: |
+          cd openwrt
+          mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/www/cgi-bin
+
+          # 1. IP Tinh LAN 192.168.1.1
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -53,7 +97,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # 2. Wi-Fi mac dinh: Mi3_recovery / 1234567890
+          # 2. Wi-Fi Mac dinh
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -72,7 +116,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 3. Quan ly luu config vao offset 3.5MB (block 64k thu 56)
+          # 3. Kich ban doc/ghi config tai offset 3.5MB
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -103,13 +147,12 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # 4. Boot: Breathing LED vang & Nap config
+          # 4. Khoi dong Breathing LED vang & Nap config
           cat << 'EOF' > files/etc/rc.local
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
               echo 0 > "$led/brightness" 2>/dev/null
           done
-
           for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*amber*; do
               if [ -d "$led" ]; then
                   echo timer > "$led/trigger" 2>/dev/null
@@ -118,40 +161,30 @@ jobs:
                   break
               fi
           done
-
           /usr/sbin/cfg_manager load &
           exit 0
           EOF
 
-          # 5. Phim Reset 3 lan lien tuc (khoang cach <= 1s)
+          # 5. Phim Reset 3 lan lien tuc
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
           [ "$ACTION" = "released" ] || exit 0
-
-          COUNTER_FILE="/tmp/reset_click_count"
-          TIMESTAMP_FILE="/tmp/reset_last_time"
-
+          COUNTER="/tmp/reset_cnt"
+          TIME_F="/tmp/reset_time"
           NOW=$(cut -d. -f1 /proc/uptime)
-          LAST=0
-          COUNT=0
-
-          [ -f "$TIMESTAMP_FILE" ] && LAST=$(cat "$TIMESTAMP_FILE")
-          [ -f "$COUNTER_FILE" ] && COUNT=$(cat "$COUNTER_FILE")
-
-          DIFF=$((NOW - LAST))
-
-          if [ "$DIFF" -le 1 ]; then
-              COUNT=$((COUNT + 1))
+          LAST=0; CNT=0
+          [ -f "$TIME_F" ] && LAST=$(cat "$TIME_F")
+          [ -f "$COUNTER" ] && CNT=$(cat "$COUNTER")
+          if [ $((NOW - LAST)) -le 1 ]; then
+              CNT=$((CNT + 1))
           else
-              COUNT=1
+              CNT=1
           fi
-
-          echo "$NOW" > "$TIMESTAMP_FILE"
-          echo "$COUNT" > "$COUNTER_FILE"
-
-          if [ "$COUNT" -ge 3 ]; then
-              rm -f "$COUNTER_FILE" "$TIMESTAMP_FILE"
+          echo "$NOW" > "$TIME_F"
+          echo "$CNT" > "$COUNTER"
+          if [ "$CNT" -ge 3 ]; then
+              rm -f "$COUNTER" "$TIME_F"
               for led in /sys/class/leds/*; do
                   echo timer > "$led/trigger" 2>/dev/null
                   echo 80 > "$led/delay_on" 2>/dev/null
@@ -161,195 +194,56 @@ jobs:
           fi
           EOF
 
-          # 6. Giao dien Web Flasher
+          # 6. Giao dien Web TWRP Flasher
           cat << 'EOF' > files/www/index.html
           <!DOCTYPE html>
-          <html lang="vi">
-          <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <title>Mi3 TWRP Recovery</title>
-              <style>
-                  body { font-family: sans-serif; background: #f0f2f5; margin: 0; padding: 15px; }
-                  .card { background: white; padding: 15px; border-radius: 8px; max-width: 420px; margin: 0 auto 15px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-                  h3 { margin-top: 0; color: #1a73e8; }
-                  input { width: 100%; padding: 10px; margin: 8px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-                  button { background: #1a73e8; color: white; border: none; padding: 10px; width: 100%; border-radius: 4px; font-weight: bold; cursor: pointer; }
-                  button:disabled { background: #ccc; }
-                  .danger { background: #d93025; }
-                  #msg, #wifi-msg { margin-top: 10px; font-size: 14px; font-weight: bold; }
-              </style>
-          </head>
+          <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Mi3 TWRP</title>
+          <style>body{font-family:sans-serif;background:#eceff1;padding:15px;}.c{background:#fff;padding:15px;border-radius:8px;max-width:400px;margin:0 auto 15px;}input,button{width:100%;padding:10px;margin:8px 0;box-sizing:border-box;}button{background:#1976d2;color:#fff;border:none;border-radius:4px;font-weight:bold;cursor:pointer;}.d{background:#d32f2f;}</style></head>
           <body>
-              <div class="card">
-                  <h3>Cài đặt ROM Offline</h3>
-                  <input type="file" id="romFile" accept=".bin,.trx">
-                  <button id="btnFlash" onclick="flashRom()">Bắt đầu Flash</button>
-                  <div id="msg"></div>
-              </div>
-
-              <div class="card">
-                  <h3>Đổi Cấu Hình Wi-Fi</h3>
-                  <label>Tên Wi-Fi (SSID):</label>
-                  <input type="text" id="ssid" value="Mi3_recovery">
-                  <label>Mật khẩu (tối thiểu 8 ký tự):</label>
-                  <input type="password" id="pass" value="1234567890">
-                  <button onclick="setWifi()">Lưu cấu hình</button>
-                  <div id="wifi-msg"></div>
-              </div>
-
-              <div class="card">
-                  <h3>Khôi phục gốc</h3>
-                  <p style="font-size: 13px; color: #666;">Bấm nút Reset trên thân router 3 lần (cách nhau 1s) hoặc bấm nút dưới:</p>
-                  <button class="danger" onclick="resetConfig()">Reset về mặc định</button>
-              </div>
-
-              <script>
-                  async function flashRom() {
-                      const file = document.getElementById('romFile').files[0];
-                      const msg = document.getElementById('msg');
-                      const btn = document.getElementById('btnFlash');
-                      if (!file) return alert('Vui lòng chọn file ROM!');
-
-                      btn.disabled = true;
-                      msg.innerText = 'Đang đẩy ROM lên RAM...';
-
-                      try {
-                          let res = await fetch('/cgi-bin/flash.cgi', { method: 'POST', body: file });
-                          msg.innerText = await res.text();
-                      } catch (e) {
-                          msg.innerText = 'Lỗi kết nối!';
-                      }
-                      btn.disabled = false;
-                  }
-
-                  async function setWifi() {
-                      const ssid = document.getElementById('ssid').value;
-                      const pass = document.getElementById('pass').value;
-                      const msg = document.getElementById('wifi-msg');
-
-                      if (pass.length < 8) return alert('Mật khẩu phải từ 8 ký tự!');
-                      msg.innerText = 'Đang lưu và đổi sóng Wi-Fi...';
-
-                      let res = await fetch('/cgi-bin/wifi.cgi', {
-                          method: 'POST',
-                          body: JSON.stringify({ ssid, pass })
-                      });
-                      msg.innerText = await res.text();
-                  }
-
-                  async function resetConfig() {
-                      if (confirm('Xóa sạch cấu hình đã lưu và khởi động lại?')) {
-                          await fetch('/cgi-bin/reset.cgi');
-                          alert('Router đang khôi phục gốc và khởi động lại!');
-                      }
-                  }
-              </script>
-          </body>
-          </html>
+          <div class="c"><h3>Cài đặt ROM Offline</h3><input type="file" id="f"><button onclick="flash()">Bắt đầu Flash</button><div id="m1"></div></div>
+          <div class="c"><h3>Cấu hình Wi-Fi</h3><input type="text" id="s" value="Mi3_recovery"><input type="password" id="p" value="1234567890"><button onclick="setWifi()">Lưu cấu hình</button><div id="m2"></div></div>
+          <div class="c"><h3>Khôi phục gốc</h3><button class="d" onclick="rst()">Xóa cài đặt (Reset)</button></div>
+          <script>
+          async function flash(){let f=document.getElementById('f').files[0];if(!f)return alert('Chọn ROM!');document.getElementById('m1').innerText='Đang nạp ROM...';let r=await fetch('/cgi-bin/flash.cgi',{method:'POST',body:f});document.getElementById('m1').innerText=await r.text();}
+          async function setWifi(){let s=document.getElementById('s').value,p=document.getElementById('p').value;if(p.length<8)return alert('Mật khẩu >= 8 ký tự');document.getElementById('m2').innerText='Đang đổi Wi-Fi...';let r=await fetch('/cgi-bin/wifi.cgi',{method:'POST',body:JSON.stringify({ssid:s,pass:p})});document.getElementById('m2').innerText=await r.text();}
+          async function rst(){if(confirm('Khôi phục mặc định?')){await fetch('/cgi-bin/reset.cgi');alert('Router đang khởi động lại!');}}
+          </script></body></html>
           EOF
 
-          # 7. Backend CGI Flash ROM
+          # 7. Backend CGI
           cat << 'EOF' > files/www/cgi-bin/flash.cgi
           #!/bin/sh
-          echo "Content-type: text/plain"
-          echo ""
-
+          echo -e "Content-type: text/plain\n\n"
           cat > /tmp/firmware.bin
-          if [ -s /tmp/firmware.bin ]; then
-              echo "Đã nhận ROM. Đang tiến hành ghi Flash..."
-              mtd -r write /tmp/firmware.bin firmware >/dev/null 2>&1 &
-              echo "Đang ghi NAND. Router sẽ tự khởi động lại khi hoàn tất!"
-          else
-              echo "Lỗi: Không nhận được file."
-          fi
+          [ -s /tmp/firmware.bin ] && { mtd -r write /tmp/firmware.bin firmware >/dev/null 2>&1 & echo "Đang ghi NAND, router sẽ tự reboot!"; } || echo "Lỗi file!"
           EOF
 
-          # 8. Backend CGI doi WiFi
           cat << 'EOF' > files/www/cgi-bin/wifi.cgi
           #!/bin/sh
-          echo "Content-type: text/plain"
-          echo ""
-
-          read -r BODY
-          SSID=$(echo "$BODY" | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p')
-          PASS=$(echo "$BODY" | sed -n 's/.*"pass":"\([^"]*\)".*/\1/p')
-
-          if [ -n "$SSID" ] && [ -n "$PASS" ]; then
-              uci set wireless.default_radio0.ssid="$SSID"
-              uci set wireless.default_radio0.key="$PASS"
-              uci commit wireless
-              wifi reload
-              /usr/sbin/cfg_manager save
-              echo "Đã lưu Wi-Fi mới và áp dụng ngay!"
-          else
-              echo "Lỗi tham số dữ liệu!"
-          fi
+          echo -e "Content-type: text/plain\n\n"
+          read -r B; S=$(echo "$B" | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p'); P=$(echo "$B" | sed -n 's/.*"pass":"\([^"]*\)".*/\1/p')
+          if [ -n "$S" ] && [ -n "$P" ]; then
+              uci set wireless.default_radio0.ssid="$S"
+              uci set wireless.default_radio0.key="$P"
+              uci commit wireless; wifi reload; /usr/sbin/cfg_manager save
+              echo "Đã đổi Wi-Fi thành công!"
+          else echo "Lỗi tham số!"; fi
           EOF
 
-          # 9. Backend CGI Reset
           cat << 'EOF' > files/www/cgi-bin/reset.cgi
           #!/bin/sh
-          echo "Content-type: text/plain"
-          echo ""
-          echo "OK"
-          for led in /sys/class/leds/*; do
-              echo timer > "$led/trigger" 2>/dev/null
-              echo 80 > "$led/delay_on" 2>/dev/null
-              echo 80 > "$led/delay_off" 2>/dev/null
-          done
+          echo -e "Content-type: text/plain\n\nOK"
           /usr/sbin/cfg_manager reset &
           EOF
 
           chmod +x files/www/cgi-bin/*
 
-      - name: Cau hinh toi gian cho Mi Router 3 (Initramfs Only)
-        run: |
-          cd openwrt
-          cat << 'EOF' > .config
-          CONFIG_TARGET_ramips=y
-          CONFIG_TARGET_ramips_mt7620=y
-          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
-
-          # Bat buoc build kernel Initramfs chay tren RAM
-          CONFIG_TARGET_ROOTFS_INITRAMFS=y
-
-          # Cong cu bat buoc
-          CONFIG_PACKAGE_uhttpd=y
-          CONFIG_PACKAGE_mtd=y
-          CONFIG_PACKAGE_opkg=y
-          CONFIG_PACKAGE_libustream-mbedtls=y
-          CONFIG_PACKAGE_ca-bundle=y
-
-          # Loai bo toan bo bloatware de dat dung luong < 3MB
-          # CONFIG_PACKAGE_luci is not set
-          # CONFIG_PACKAGE_dnsmasq is not set
-          # CONFIG_PACKAGE_firewall is not set
-          # CONFIG_PACKAGE_firewall4 is not set
-          # CONFIG_PACKAGE_ppp is not set
-          # CONFIG_PACKAGE_ppp-mod-pppoe is not set
-          # CONFIG_PACKAGE_kmod-ppp is not set
-          # CONFIG_PACKAGE_kmod-pppoe is not set
-          # CONFIG_PACKAGE_odhcp6c is not set
-          # CONFIG_PACKAGE_odhcpd-ipv6only is not set
-          # CONFIG_PACKAGE_kmod-ipv6 is not set
-          EOF
-
-          make defconfig
-
-      - name: Tai dependencies truoc khi bien dich
-        run: |
-          cd openwrt
-          make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
-
-      - name: Bien dich Firmware
+      - name: Bien dich Firmware (Initramfs Kernel)
         run: |
           cd openwrt
           make -j$(nproc) || make -j1 V=s
 
-      - name: Luu tru ban Build Initramfs
+      - name: Luu Artifacts (File Recovery Kernel)
         uses: actions/upload-artifact@v4
         with:
           name: Mi3_TWRP_Recovery
