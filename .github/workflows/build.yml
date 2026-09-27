@@ -1,4 +1,4 @@
-name: Fast Build Mi3 TWRP (Using Cache)
+name: Build Mi3 TWRP Super Minimal
 
 on:
   workflow_dispatch:
@@ -16,35 +16,33 @@ jobs:
         run: |
           sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get update -qq
-          sudo apt-get install -yqq build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev \
-            libz-dev patch python3 python2.7 unzip zlib1g-dev libssl-dev subversion flex uglifyjs git-core \
-            gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx \
-            libelf-dev autoconf automake libtool autopoint device-tree-compiler g++-multilib antlr3 gperf \
-            wget curl swig rsync
+          sudo apt-get install -yqq build-essential libncurses5-dev gawk git subversion libssl-dev gettext \
+            unzip zlib1g-dev file wget python3 rsync
           sudo apt-get clean
 
       - name: Clone Lean OpenWrt Source
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
           cd openwrt
-          sed -i 's/^src-git luci/#src-git luci/' feeds.conf.default
-          sed -i 's/^src-git routing/#src-git routing/' feeds.conf.default
-          sed -i 's/^src-git telephony/#src-git telephony/' feeds.conf.default
-          ./scripts/feeds update packages
-          ./scripts/feeds install -p packages uhttpd libustream-mbedtls ca-bundle
+          # XOA SAC TOAN BO FEEDS NGOAI - Khong de bat cu package rac nao lot vao
+          rm -rf package/feeds feeds.conf.default
+          touch feeds.conf.default
 
-      - name: Khoi phuc Toolchain tu Cache
+          # Xoa chu dong tat ca cac thu muc co nguy co loi SELinux va iwinfo
+          rm -rf package/libs/libselinux package/libs/libsepol package/network/utils/iwinfo package/utils/policycoreutils
+
+      - name: Khoi phuc Cache Toolchain (Neu co)
         uses: actions/cache/restore@v4
+        id: cache-toolchain
         with:
           path: |
             openwrt/staging_dir
             openwrt/build_dir/toolchain-*
-            openwrt/dl
-          key: mi3-toolchain-
+          key: mi3-clean-toolchain-v2
           restore-keys: |
-            mi3-toolchain-
+            mi3-clean-toolchain-
 
-      - name: Cau hinh toi gian & Khac phuc loi iwinfo
+      - name: Cau hinh toi gian tuyet doi (Khong Feeds, Initramfs Only)
         run: |
           cd openwrt
           cat << 'EOF' > .config
@@ -52,37 +50,48 @@ jobs:
           CONFIG_TARGET_ramips_mt7620=y
           CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-          # Chi build Kernel Initramfs vao RAM
+          # Chi build Initramfs chay tren RAM
           CONFIG_TARGET_ROOTFS_INITRAMFS=y
           # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 
-          # Cong cu bat buoc
-          CONFIG_PACKAGE_uhttpd=y
+          # Cong cu co san trong core OpenWrt
           CONFIG_PACKAGE_mtd=y
-          CONFIG_PACKAGE_opkg=y
-          CONFIG_PACKAGE_libustream-mbedtls=y
-          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG_PACKAGE_busybox=y
 
-          # Tat hoan toan iwinfo va cac phu thuoc gay loi
+          # Tat sach cac goi rac
+          # CONFIG_PACKAGE_libselinux is not set
+          # CONFIG_PACKAGE_libsepol is not set
           # CONFIG_PACKAGE_iwinfo is not set
           # CONFIG_PACKAGE_libiwinfo is not set
-          # CONFIG_PACKAGE_libiwinfo-lua is not set
-          # CONFIG_PACKAGE_lua is not set
           # CONFIG_PACKAGE_luci is not set
           # CONFIG_PACKAGE_dnsmasq is not set
           # CONFIG_PACKAGE_firewall is not set
-          # CONFIG_PACKAGE_firewall4 is not set
           # CONFIG_PACKAGE_ppp is not set
           # CONFIG_PACKAGE_kmod-ipv6 is not set
           EOF
           make defconfig
 
-      - name: Cai dat Web UI, Breathing LED, Phim Reset va Script Offset 3.5MB
+      - name: Bien dich Toolchain (Xay dung bo cong cu cot loi)
+        run: |
+          cd openwrt
+          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
+
+      # BUOC QUAN TRONG: Luu cache Toolchain NGAY LAP TUC, ke ca cac buoc sau co loi van luu!
+      - name: Luu Cache Toolchain Du Phong
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/toolchain-*
+          key: mi3-clean-toolchain-v2
+
+      - name: Cai dat Web UI, LED, Reset & Script 3.5MB
         run: |
           cd openwrt
           mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/www/cgi-bin
 
-          # 1. IP Tinh LAN 192.168.1.1
+          # LAN 192.168.1.1
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -97,7 +106,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # 2. Wi-Fi Mac dinh
+          # Wi-Fi Mac Dinh
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -116,7 +125,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 3. Kich ban doc/ghi config tai offset 3.5MB
+          # cfg_manager offset 3.5MB
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -147,7 +156,7 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # 4. Khoi dong Breathing LED vang & Nap config
+          # Breathing LED Boot (Dung HTTP server tich hop cua Busybox: httpd)
           cat << 'EOF' > files/etc/rc.local
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
@@ -162,10 +171,12 @@ jobs:
               fi
           done
           /usr/sbin/cfg_manager load &
+          # Chay Web Server tich hop san trong Busybox (khong can package ngoai)
+          httpd -p 80 -h /www
           exit 0
           EOF
 
-          # 5. Phim Reset 3 lan lien tuc
+          # Triple Reset
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
@@ -194,7 +205,7 @@ jobs:
           fi
           EOF
 
-          # 6. Giao dien Web TWRP Flasher
+          # Web UI & CGI
           cat << 'EOF' > files/www/index.html
           <!DOCTYPE html>
           <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Mi3 TWRP</title>
@@ -210,17 +221,16 @@ jobs:
           </script></body></html>
           EOF
 
-          # 7. Backend CGI
           cat << 'EOF' > files/www/cgi-bin/flash.cgi
           #!/bin/sh
-          echo -e "Content-type: text/plain\n\n"
+          echo -e "Content-type: text/plain\r\n\r\n"
           cat > /tmp/firmware.bin
           [ -s /tmp/firmware.bin ] && { mtd -r write /tmp/firmware.bin firmware >/dev/null 2>&1 & echo "Đang ghi NAND, router sẽ tự reboot!"; } || echo "Lỗi file!"
           EOF
 
           cat << 'EOF' > files/www/cgi-bin/wifi.cgi
           #!/bin/sh
-          echo -e "Content-type: text/plain\n\n"
+          echo -e "Content-type: text/plain\r\n\r\n"
           read -r B; S=$(echo "$B" | sed -n 's/.*"ssid":"\([^"]*\)".*/\1/p'); P=$(echo "$B" | sed -n 's/.*"pass":"\([^"]*\)".*/\1/p')
           if [ -n "$S" ] && [ -n "$P" ]; then
               uci set wireless.default_radio0.ssid="$S"
@@ -232,11 +242,11 @@ jobs:
 
           cat << 'EOF' > files/www/cgi-bin/reset.cgi
           #!/bin/sh
-          echo -e "Content-type: text/plain\n\nOK"
+          echo -e "Content-type: text/plain\r\n\r\nOK"
           /usr/sbin/cfg_manager reset &
           EOF
 
-          chmod +x files/www/cgi-bin/*
+          chmod +x files/www/cgi-bin/* files/etc/rc.local
 
       - name: Bien dich Firmware (Initramfs Kernel)
         run: |
