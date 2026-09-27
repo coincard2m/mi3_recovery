@@ -1,0 +1,66 @@
+name: Export Cache to GitHub Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Cai dat Zstandard
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq zstd
+
+      # Dung chinh cac duong dan goc de keo tat ca nhung gi GitHub Cache dang giu
+      - name: Thu khoi phuc Cache hien co
+        uses: actions/cache/restore@v4
+        id: try-restore
+        with:
+          path: |
+            openwrt/staging_dir
+            openwrt/build_dir/toolchain-*
+            openwrt/build_dir/target-*
+          key: mi3-cache-v4-4947846eaf52ebe539cce5ca724852b8dde772f1-36291357371
+          restore-keys: |
+            mi3-cache-v4-
+            mi3-full-cache-
+            mi3-build-cache-
+            mi3-toolchain-
+            mi3-
+
+      # Kiem tra xem da khoi phuc duoc thu muc nao chua
+      - name: Kiem tra du lieu va Dong goi
+        id: pack
+        run: |
+          ls -la openwrt || true
+          if [ -d "openwrt/staging_dir" ]; then
+            echo "Tim thay staging_dir, bat dau dong goi..."
+            tar -I 'zstd -T0 -1' -cf mi3_toolchain_cache.tar.zst \
+              openwrt/staging_dir \
+              openwrt/build_dir/toolchain-* \
+              openwrt/build_dir/target-* 2>/dev/null || true
+            echo "done=true" >> $GITHUB_OUTPUT
+          else
+            echo "Khong tim thay du lieu tu cache de dong goi!"
+            exit 1
+          fi
+
+      - name: Day len Release
+        if: steps.pack.outputs.done == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: toolchain-cache
+          name: "Mi3 Toolchain & BuildDir Cache"
+          body: "Bản nén Toolchain và Packages đã biên dịch cho Mi Router 3."
+          draft: false
+          prerelease: false
+          files: mi3_toolchain_cache.tar.zst
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
