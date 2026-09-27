@@ -1,4 +1,4 @@
-name: Build Mi3 Recovery Minimal (No Web)
+name: Build Mi3 Recovery Minimal (Full Cache All-in-One)
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
           cd openwrt
-          # Xoa bo hoan toan feeds va package rac cua Lean de triet tieu loi po2lmo
+          # Loai bo feed rac va cac package gay loi
           rm -rf package/feeds feeds.conf.default
           touch feeds.conf.default
           rm -rf package/lean
@@ -36,19 +36,23 @@ jobs:
           cd openwrt
           echo "head_hash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Khoi phuc Cache (Toolchain & Target Packages)
+      - name: Khoi phuc Cache (Toan bo tien trinh build)
         uses: actions/cache/restore@v4
         id: cache-build
         with:
           path: |
             openwrt/staging_dir
             openwrt/build_dir/toolchain-*
+            openwrt/build_dir/host
             openwrt/build_dir/target-*
-          key: mi3-build-cache-${{ steps.get-hash.outputs.head_hash }}
+          key: mi3-cache-v4-${{ steps.get-hash.outputs.head_hash }}-${{ github.run_id }}
           restore-keys: |
+            mi3-cache-v4-${{ steps.get-hash.outputs.head_hash }}-
+            mi3-cache-v4-
+            mi3-full-cache-
             mi3-build-cache-
 
-      - name: Cau hinh Minimal (Core Packages, SSH, LAN, Wi-Fi)
+      - name: Cau hinh Minimal (Core, SSH, LAN, Wi-Fi - Bo LuCI & dnsmasq)
         run: |
           cd openwrt
           cat << 'EOF' > .config
@@ -56,11 +60,11 @@ jobs:
           CONFIG_TARGET_ramips_mt7620=y
           CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-          # Tao ban Kernel Initramfs vao RAM
+          # Ban Kernel Initramfs chay tren RAM
           CONFIG_TARGET_ROOTFS_INITRAMFS=y
           # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 
-          # Cong cu he thong & SSH
+          # Cong cu he thong co ban & SSH
           CONFIG_PACKAGE_mtd=y
           CONFIG_PACKAGE_busybox=y
           CONFIG_PACKAGE_dropbear=y
@@ -69,7 +73,7 @@ jobs:
           CONFIG_PACKAGE_kmod-mt76=y
           CONFIG_PACKAGE_wpad-basic-wolfssl=y
 
-          # Tat sach cac goi gay loi va thua thai
+          # Bo qua hoan toan cac goi xung dot
           # CONFIG_PACKAGE_dnsmasq is not set
           # CONFIG_PACKAGE_dnsmasq-full is not set
           # CONFIG_PACKAGE_odhcpd is not set
@@ -89,14 +93,14 @@ jobs:
           cd openwrt
           mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/etc/dropbear
 
-          # 1. Mat khau SSH mac dinh la 'root'
+          # Mat khau SSH mac dinh: root
           echo 'root:$1$wOSEP9x2$zP86p7aWkM0dK7uF.qS0X/:19000:0:99999:7:::' > files/etc/shadow
           chmod 600 files/etc/shadow
 
-          # 2. File gia lap phong tranh loi postinst
+          # File tranh loi postinst
           touch files/etc/config/dhcp
 
-          # 3. Cau hinh mang LAN: 192.168.1.1
+          # Cau hinh IP LAN tinh: 192.168.1.1
           cat << 'EOF' > files/etc/config/network
           config interface 'loopback'
                   option device 'lo'
@@ -111,7 +115,7 @@ jobs:
                   option netmask '255.255.255.0'
           EOF
 
-          # 4. Wi-Fi Cuu ho phat song tu dong (Pass: 1234567890)
+          # Wi-Fi cuu ho: Mi3_recovery (Pass: 1234567890)
           cat << 'EOF' > files/etc/config/wireless
           config wifi-device 'radio0'
                   option type 'mac80211'
@@ -130,7 +134,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 5. Script quan ly config ne Bad Block (Quet nguoc tu Block 31 ve 28)
+          # Script quan ly config ne Bad Block
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -181,7 +185,7 @@ jobs:
           EOF
           chmod +x files/usr/sbin/cfg_manager
 
-          # 6. Khoi dong DHCP cho LAN qua udhcpd + SSH + Den bao Recovery
+          # Khoi dong udhcpd cap LAN + Dropbear + Den Amber
           cat << 'EOF' > files/etc/rc.local
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
@@ -198,7 +202,7 @@ jobs:
 
           /usr/sbin/cfg_manager load &
 
-          # Cap IP tu dong cho cong LAN
+          # DHCP Server tu dong cap IP cho cong LAN
           cat << 'DHCP' > /tmp/udhcpd.conf
           start 192.168.1.100
           end 192.168.1.200
@@ -214,7 +218,7 @@ jobs:
           EOF
           chmod +x files/etc/rc.local
 
-          # 7. Nut Triple Reset: Nhan 3 lan trong 1s de xoa sach cau hinh
+          # Nut Triple Reset
           cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
           #!/bin/sh
           [ "$BUTTON" = "reset" ] || exit 0
@@ -246,17 +250,21 @@ jobs:
       - name: Bien dich Firmware (Initramfs Kernel)
         run: |
           cd openwrt
+          # Fix loi binutils __stat_time64 va conflict file offset tren Ubuntu host
+          export CFLAGS="$CFLAGS -D_FILE_OFFSET_BITS=64"
+          export CXXFLAGS="$CXXFLAGS -D_FILE_OFFSET_BITS=64"
           make -j$(nproc) || make -j1 V=s
 
-      - name: Luu Cache Build (Cuu tien trinh make)
+      - name: Luu Cache Build (Toan bo Toolchain, Host Tools & Packages Make 3)
         uses: actions/cache/save@v4
         if: always()
         with:
           path: |
             openwrt/staging_dir
             openwrt/build_dir/toolchain-*
+            openwrt/build_dir/host
             openwrt/build_dir/target-*
-          key: mi3-build-cache-${{ steps.get-hash.outputs.head_hash }}
+          key: mi3-cache-v4-${{ steps.get-hash.outputs.head_hash }}-${{ github.run_id }}
 
       - name: Luu Artifacts (File Recovery Kernel)
         uses: actions/upload-artifact@v4
