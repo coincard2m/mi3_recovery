@@ -1,98 +1,121 @@
-name: Build and Release Toolchain
+name: Build Standard Mi3 Initramfs
 
 on:
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  build_release:
+  build:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Cai dat moi truong
+      - name: Cai dat moi truong build
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo apt-get update -qq
           sudo apt-get install -yqq build-essential libncurses5-dev gawk git subversion libssl-dev gettext \
-            unzip zlib1g-dev file wget python3 rsync zstd
+            unzip zlib1g-dev file wget python3 rsync
           sudo apt-get clean
 
-      - name: Clone Lean OpenWrt
+      - name: Keo ma nguon va Config chuan cua XFY9326
         run: |
-          git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
-          cd openwrt
-          rm -rf package/feeds feeds.conf.default
-          touch feeds.conf.default
-          rm -rf package/lean
-          rm -rf package/libs/libselinux package/libs/libsepol package/network/utils/iwinfo package/utils/policycoreutils
+          # 1. Clone OpenWrt 21.02.0 chuan
+          git clone -b v21.02.0 --single-branch https://github.com/openwrt/openwrt.git openwrt
+          
+          # 2. Clone repo XFY9326 de lay nguyen bo Patches va Config da kiem chung
+          git clone --depth 1 https://github.com/XFY9326/Xiaomi-R3-OpenWrt-Stable.git r3_src
+          cp -r r3_src/patches/* openwrt/
+          cp r3_src/.config openwrt/.config
+          rm -rf r3_src
 
-      - name: Cau hinh Minimal
+      - name: Cap nhat Feeds va Bat Initramfs
         run: |
           cd openwrt
-          cat << 'EOF' > .config
-          CONFIG_TARGET_ramips=y
-          CONFIG_TARGET_ramips_mt7620=y
-          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
-          CONFIG_TARGET_ROOTFS_INITRAMFS=y
-          # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
-
-          # Cong cu he thong & mang co ban
-          CONFIG_PACKAGE_mtd=y
-          CONFIG_PACKAGE_busybox=y
-          CONFIG_PACKAGE_dropbear=y
-          CONFIG_PACKAGE_kmod-mt76=y
-          CONFIG_PACKAGE_wpad-basic-wolfssl=y
-
-          # Tat sach firewall, ppp de giam kich thuoc kernel initramfs xuong duoi 3MB
-          # CONFIG_PACKAGE_firewall is not set
-          # CONFIG_PACKAGE_ppp is not set
-          # CONFIG_PACKAGE_dnsmasq is not set
-          # CONFIG_PACKAGE_dnsmasq-full is not set
-          CONFIG_PACKAGE_kmod-ipt-core=n
-          CONFIG_PACKAGE_kmod-ipt-nat=n
-          CONFIG_PACKAGE_kmod-ipt-nat6=n
-          CONFIG_PACKAGE_kmod-nf-nathelper-extra=n
-          CONFIG_PACKAGE_kmod-ipv6=n
-          CONFIG_PACKAGE_kmod-usb-core=n
-          CONFIG_PACKAGE_kmod-usb2=n
-          CONFIG_PACKAGE_kmod-usb-ohci=n
-          EOF
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          
+          # Su dung cong cu config chuan cua OpenWrt de khong bao gio bi gay dependency
+          ./scripts/config --enable CONFIG_TARGET_ROOTFS_INITRAMFS
           make defconfig
 
-      - name: Bien dich Firmware va Kernel
+      - name: Chen System Files cuu ho (Khong dung cham ma nguon)
         run: |
           cd openwrt
-          echo "=== TIEN HANH BIEN DICH ==="
-          make -j$(nproc) || {
-              echo "=== LOI XAY RA: IN CHI TIET TAI TARGET IMAGE ==="
-              make target/install V=s -j1 || true
-              exit 1
-          }
+          mkdir -p files/etc/config files/usr/sbin
+          
+          # Dat mat khau root mac dinh
+          echo 'root:$1$wOSEP9x2$zP86p7aWkM0dK7uF.qS0X/:19000:0:99999:7:::' > files/etc/shadow
+          
+          # Chep script cfg_manager
+          cat << 'EOF' > files/usr/sbin/cfg_manager
+          #!/bin/sh
+          REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
+          [ -z "$REC_DEV" ] && exit 1
+          MTD_PATH="/dev/${REC_DEV}"
+          CANDIDATE_BLOCKS="31 30 29 28"
 
-      - name: Dong goi Toolchain va Artifacts
+          case "$1" in
+              save)
+                  cd /
+                  tar -czf /tmp/cfg_payload.tar.gz etc/config/wireless etc/config/network etc/shadow 2>/dev/null
+                  SAVED=0
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      if dd if=/tmp/cfg_payload.tar.gz of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null; then
+                          dd if=$MTD_PATH of=/tmp/cfg_verify.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
+                          if tar -tzf /tmp/cfg_verify.tar.gz >/dev/null 2>&1; then
+                              rm -f /tmp/cfg_verify.tar.gz
+                              SAVED=1
+                              break
+                          fi
+                          rm -f /tmp/cfg_verify.tar.gz
+                      fi
+                  done
+                  rm -f /tmp/cfg_payload.tar.gz
+                  [ $SAVED -eq 1 ] && exit 0 || exit 1
+                  ;;
+              load)
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      dd if=$MTD_PATH of=/tmp/cfg_read.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
+                      if tar -tzf /tmp/cfg_read.tar.gz >/dev/null 2>&1; then
+                          tar -xzf /tmp/cfg_read.tar.gz -C /
+                          rm -f /tmp/cfg_read.tar.gz
+                          wifi reload 2>/dev/null
+                          exit 0
+                      fi
+                      rm -f /tmp/cfg_read.tar.gz
+                  done
+                  ;;
+              reset)
+                  for BLK in $CANDIDATE_BLOCKS; do
+                      dd if=/dev/zero of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null
+                  done
+                  sync
+                  reboot
+                  ;;
+          esac
+          EOF
+          chmod +x files/usr/sbin/cfg_manager
+          chmod 600 files/etc/shadow
+
+      - name: Bien dich Firmware
         run: |
-          # Nén toàn bộ những gì đã compile để lưu vĩnh viễn
-          tar -I 'zstd -T0 -1' -cf mi3_toolchain_cache.tar.zst \
-            openwrt/staging_dir \
-            openwrt/build_dir/toolchain-* \
-            openwrt/build_dir/target-*
+          cd openwrt
+          # Compile voi so luong luong chuan, tu dong bat log chi tiet neu gap su co
+          make -j$(nproc) || make -j1 V=s
 
-      - name: Day file len GitHub Release
-        uses: softprops/action-gh-release@v2
+      # Giu nguyen terminal neu co van de de khong ton thoi gian chay lai
+      - name: Debug SSH truc tiep (Neu xay ra loi)
+        if: failure()
+        uses: mxschmitt/action-tmate@v3
         with:
-          tag_name: toolchain-v1
-          name: "Mi3 Toolchain & Build Artifacts"
-          body: "Bản build thành công cho Xiaomi Mi WiFi 3."
-          draft: false
-          prerelease: false
-          files: |
-            mi3_toolchain_cache.tar.zst
-            openwrt/bin/targets/ramips/mt7620/*initramfs-kernel.bin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          detached: false
+
+      - name: Luu Recovery Kernel Initramfs
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mi3_Initramfs_Kernel
+          path: openwrt/bin/targets/ramips/mt7620/*initramfs-kernel.bin
