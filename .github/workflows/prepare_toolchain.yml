@@ -24,25 +24,27 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
           cd openwrt
-          # Xoa bo toan bo feeds va package rác cua Lean de tranh loi bien dich
+          # Loai bo cac feed va package khong can thiet de tranh loi bien dich
           rm -rf package/feeds feeds.conf.default
           touch feeds.conf.default
           rm -rf package/lean
           rm -rf package/libs/libselinux package/libs/libsepol package/network/utils/iwinfo package/utils/policycoreutils
 
-      - name: Khoi phuc Cache (Toolchain, Host Tools & Packages Make 3)
+      - name: Khoi phuc Cache (Toolchain, Host Tools & Packages)
         uses: actions/cache/restore@v4
         id: cache-build
         with:
           path: |
-            openwrt/staging_dir
-            openwrt/build_dir/toolchain-*
-            openwrt/build_dir/target-*
-          key: mi3-cache-v4-4947846eaf52ebe539cce5ca724852b8dde772f1-36291357371
+            ${{ github.workspace }}/openwrt/staging_dir
+            ${{ github.workspace }}/openwrt/build_dir/toolchain-*
+            ${{ github.workspace }}/openwrt/build_dir/target-*
+          key: mi3-cache-v4-${{ github.sha }}-${{ github.run_id }}
           restore-keys: |
+            mi3-cache-v4-4947846eaf52ebe539cce5ca724852b8dde772f1-36291357371
             mi3-cache-v4-
+            mi3-
 
-      - name: Cau hinh Minimal (Tat Firewall/IPTables gay loi Package Install)
+      - name: Cau hinh Minimal (Tat Firewall/IPTables)
         run: |
           cd openwrt
           cat << 'EOF' > .config
@@ -50,11 +52,11 @@ jobs:
           CONFIG_TARGET_ramips_mt7620=y
           CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
 
-          # Chi tao ban Kernel Initramfs chay truc tiep tren RAM
+          # Chi tao kernel Initramfs nap truc tiep vao RAM
           CONFIG_TARGET_ROOTFS_INITRAMFS=y
           # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
 
-          # Cong cu he thong mang & SSH
+          # Cong cu he thong, mang & SSH
           CONFIG_PACKAGE_mtd=y
           CONFIG_PACKAGE_busybox=y
           CONFIG_PACKAGE_dropbear=y
@@ -63,7 +65,7 @@ jobs:
           CONFIG_PACKAGE_kmod-mt76=y
           CONFIG_PACKAGE_wpad-basic-wolfssl=y
 
-          # Tat sach firewall, iptables, nat de chong loi Error 255 tai package/install
+          # Vo hieu hoa toan bo firewall, iptables, nat de tranh loi Error 255
           # CONFIG_PACKAGE_firewall is not set
           # CONFIG_PACKAGE_iptables is not set
           # CONFIG_PACKAGE_ip6tables is not set
@@ -83,7 +85,7 @@ jobs:
           cd openwrt
           mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/etc/dropbear
 
-          # 1. Mat khau SSH mac dinh la 'root'
+          # 1. Mat khau SSH root mac dinh la 'root'
           echo 'root:$1$wOSEP9x2$zP86p7aWkM0dK7uF.qS0X/:19000:0:99999:7:::' > files/etc/shadow
 
           # 2. Cau hinh mang LAN: 192.168.1.1
@@ -120,7 +122,7 @@ jobs:
                   option key '1234567890'
           EOF
 
-          # 4. Script cfg_manager quan ly config ne Bad Block (Quet nguoc tu Block 31 ve 28)
+          # 4. Script quan ly cau hinh va tu dong ne Bad Block (Quet tu 31 ve 28)
           cat << 'EOF' > files/usr/sbin/cfg_manager
           #!/bin/sh
           REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
@@ -169,7 +171,7 @@ jobs:
           esac
           EOF
 
-          # 5. Boot script: Cap DHCP LAN + Dropbear SSH + Chop den Amber
+          # 5. Khoi dong DHCP LAN + Dropbear SSH + Den bao hieu
           cat << 'EOF' > files/etc/rc.local
           for led in /sys/class/leds/*; do
               echo none > "$led/trigger" 2>/dev/null
@@ -229,31 +231,30 @@ jobs:
           fi
           EOF
 
-          # Phan quyen chuan cho files/ de tranh loi package/install Error 255
+          # Thiet lap quyen he thong
           chmod -R 755 files
           chmod 600 files/etc/shadow
           chmod +x files/usr/sbin/cfg_manager files/etc/rc.local files/etc/hotplug.d/button/00-triple-reset
 
-      - name: Bien dich Firmware (Tu dong in chi tiet loi neu bi ngat)
+      - name: Bien dich Firmware (In chi tiet loi neu bi ngat)
         run: |
           cd openwrt
-          echo "=== BAT DAU BIEN DICH MAKE MULTI-CORE ==="
+          echo "=== BAT DAU BIEN DICH MAKE ==="
           make -j$(nproc) || {
-              echo "=== MAKE GAP LOI: DANG CHAY CHE DO V=s J=1 DE IN RO PACKAGE/INSTALL ==="
+              echo "=== MAKE BI NGAT: BAT CHE DO V=s DE IN CHI TIET LOI ==="
               make package/install V=s -j1 || true
-              echo "=== KIEM TRA THEM TARGET/INSTALL ==="
               make target/install V=s -j1 || true
               exit 1
           }
 
-      - name: Luu Cache Build (Toan bo Toolchain, Host Tools & Packages Make 3)
+      - name: Luu Cache Build (Luu moi tien trinh make)
         uses: actions/cache/save@v4
         if: always()
         with:
           path: |
-            openwrt/staging_dir
-            openwrt/build_dir/toolchain-*
-            openwrt/build_dir/target-*
+            ${{ github.workspace }}/openwrt/staging_dir
+            ${{ github.workspace }}/openwrt/build_dir/toolchain-*
+            ${{ github.workspace }}/openwrt/build_dir/target-*
           key: mi3-cache-v4-${{ github.sha }}-${{ github.run_id }}
 
       - name: Luu Artifacts (File Recovery Kernel)
