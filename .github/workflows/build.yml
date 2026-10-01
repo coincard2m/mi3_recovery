@@ -15,10 +15,9 @@ jobs:
 
       - name: Tải OpenWrt Image Builder MT7620
         run: |
-          # Kéo đúng link file tar.xz từ ảnh
+          mkdir builder
           wget -q https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7620/openwrt-imagebuilder-23.05.5-ramips-mt7620.Linux-x86_64.tar.xz
-          tar -xf openwrt-imagebuilder-*.tar.xz
-          mv openwrt-imagebuilder-* builder
+          tar -xf openwrt-imagebuilder-*.tar.xz -C builder --strip-components=1
 
       - name: Tạo cấu hình mặc định (LAN + Wi-Fi có mật khẩu)
         run: |
