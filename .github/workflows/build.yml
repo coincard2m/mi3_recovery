@@ -43,8 +43,8 @@ jobs:
           EOF
           chmod +x files/etc/uci-defaults/99-init-settings
 
-      - name: Kết nối SSH máy ảo qua Tmate
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 30
+      - name: Mở Web Terminal qua Cloudflare
+        uses: lhotari/action-upterm@v1
         with:
-          detached: true # Chạy nền để không nghẽn nếu gặp lỗi server phụ
+          ## Upterm sử dụng giao thức websocket mã hóa đi qua máy chủ ổn định hơn tmate
+          wait-timeout-minutes: 30
