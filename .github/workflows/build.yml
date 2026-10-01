@@ -1,7 +1,7 @@
 name: Build Mi R3 Recovery Kernel
 
 on:
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công trên web
+  workflow_dispatch:
 
 jobs:
   build:
@@ -11,41 +11,38 @@ jobs:
       - name: Chuẩn bị môi trường build
         run: |
           sudo apt update
-          sudo apt install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget zstd
+          sudo apt install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget xz-utils
 
       - name: Tải OpenWrt Image Builder MT7620
         run: |
-          # Kéo bản Image Builder MT7620 chính thức
-          wget -q https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7620/openwrt-imagebuilder-23.05.5-ramips-mt7620.Linux-x86_64.tar.zst
-          tar -I zstd -xf openwrt-imagebuilder-*.tar.zst
+          # Kéo đúng link file tar.xz từ ảnh
+          wget -q https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7620/openwrt-imagebuilder-23.05.5-ramips-mt7620.Linux-x86_64.tar.xz
+          tar -xf openwrt-imagebuilder-*.tar.xz
           mv openwrt-imagebuilder-* builder
 
-      - name: Tạo cấu hình mạng & Wi-Fi mặc định
+      - name: Tạo cấu hình mặc định (LAN + Wi-Fi có mật khẩu)
         run: |
           cd builder
           mkdir -p files/etc/uci-defaults
 
-          # Script tự động cấu hình khi kernel boot trên RAM
           cat << 'EOF' > files/etc/uci-defaults/99-init-settings
-          # 1. Bật giao diện LAN (cổng mạng dây)
+          # Nhận IP LAN 192.168.1.1
           uci set network.lan.ipaddr='192.168.1.1'
           uci set network.lan.netmask='255.255.255.0'
           uci commit network
 
-          # 2. Bật radio 2.4GHz & Đặt tên SSID + Pass WPA2
+          # Bật Wi-Fi 2.4GHz: Tên "Mi-R3 recovery", pass "1234567890"
           uci set wireless.@wifi-device[0].disabled='0'
           uci set wireless.default_radio0.ssid='Mi-R3 recovery'
           uci set wireless.default_radio0.encryption='psk2'
           uci set wireless.default_radio0.key='1234567890'
           uci commit wireless
 
-          # 3. Kích hoạt dịch vụ
           /etc/init.d/network restart
           wifi
           exit 0
           EOF
           chmod +x files/etc/uci-defaults/99-init-settings
 
-      - name: SSH trực tiếp vào máy GitHub (Tmate)
+      - name: Kết nối SSH máy ảo qua Tmate
         uses: mxschmitt/action-tmate@v3
-        # Bước này sẽ dừng lại và in ra link SSH để bạn điều khiển terminal trực tiếp
