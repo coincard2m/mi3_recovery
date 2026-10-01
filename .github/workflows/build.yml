@@ -1,266 +1,51 @@
-name: Build Mi3 Recovery Minimal (No Web)
+name: Build Mi R3 Recovery Kernel
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công trên web
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Cai dat moi truong build
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Chuẩn bị môi trường build
         run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo apt-get update -qq
-          sudo apt-get install -yqq build-essential libncurses5-dev gawk git subversion libssl-dev gettext \
-            unzip zlib1g-dev file wget python3 rsync
-          sudo apt-get clean
+          sudo apt update
+          sudo apt install -y build-essential libncurses5-dev zlib1g-dev gawk git gettext libssl-dev xsltproc wget zstd
 
-      - name: Clone Lean OpenWrt Source
+      - name: Tải OpenWrt Image Builder MT7620
         run: |
-          git clone --depth 1 https://github.com/coolsnowwolf/lede openwrt
-          cd openwrt
-          # Loai bo feed va cac goi le gây loi
-          rm -rf package/feeds feeds.conf.default
-          touch feeds.conf.default
-          rm -rf package/lean
-          rm -rf package/libs/libselinux package/libs/libsepol package/network/utils/iwinfo package/utils/policycoreutils
+          # Kéo bản Image Builder MT7620 chính thức
+          wget -q https://downloads.openwrt.org/releases/23.05.5/targets/ramips/mt7620/openwrt-imagebuilder-23.05.5-ramips-mt7620.Linux-x86_64.tar.zst
+          tar -I zstd -xf openwrt-imagebuilder-*.tar.zst
+          mv openwrt-imagebuilder-* builder
 
-      # KHỚP CHÍNH XÁC PATH TƯƠNG ĐỐI ĐỂ KHỚP CACHE VERSION NỘI BỘ GITHUB
-      - name: Khoi phuc Cache (Toolchain, Host Tools & Packages Make 3)
-        uses: actions/cache/restore@v4
-        id: cache-build
-        with:
-          path: |
-            openwrt/staging_dir
-            openwrt/build_dir/toolchain-*
-            openwrt/build_dir/target-*
-          key: mi3-cache-v4-4947846eaf52ebe539cce5ca724852b8dde772f1-36291357371
-          restore-keys: |
-            mi3-cache-v4-
-            mi3-full-cache-
-            mi3-build-cache-
-            mi3-toolchain-
-
-      - name: Cau hinh Minimal (Tat Firewall/IPTables de chong loi Error 255)
+      - name: Tạo cấu hình mạng & Wi-Fi mặc định
         run: |
-          cd openwrt
-          cat << 'EOF' > .config
-          CONFIG_TARGET_ramips=y
-          CONFIG_TARGET_ramips_mt7620=y
-          CONFIG_TARGET_ramips_mt7620_DEVICE_xiaomi_miwifi-3=y
+          cd builder
+          mkdir -p files/etc/uci-defaults
 
-          # Chi tao ban Kernel Initramfs vao RAM
-          CONFIG_TARGET_ROOTFS_INITRAMFS=y
-          # CONFIG_TARGET_ROOTFS_SQUASHFS is not set
+          # Script tự động cấu hình khi kernel boot trên RAM
+          cat << 'EOF' > files/etc/uci-defaults/99-init-settings
+          # 1. Bật giao diện LAN (cổng mạng dây)
+          uci set network.lan.ipaddr='192.168.1.1'
+          uci set network.lan.netmask='255.255.255.0'
+          uci commit network
 
-          # Tien ich he thong & SSH
-          CONFIG_PACKAGE_mtd=y
-          CONFIG_PACKAGE_busybox=y
-          CONFIG_PACKAGE_dropbear=y
+          # 2. Bật radio 2.4GHz & Đặt tên SSID + Pass WPA2
+          uci set wireless.@wifi-device[0].disabled='0'
+          uci set wireless.default_radio0.ssid='Mi-R3 recovery'
+          uci set wireless.default_radio0.encryption='psk2'
+          uci set wireless.default_radio0.key='1234567890'
+          uci commit wireless
 
-          # Driver Wi-Fi MT7620
-          CONFIG_PACKAGE_kmod-mt76=y
-          CONFIG_PACKAGE_wpad-basic-wolfssl=y
-
-          # Tat triet de cac thanh phan gay loi Error 255 tai package/install
-          # CONFIG_PACKAGE_firewall is not set
-          # CONFIG_PACKAGE_iptables is not set
-          # CONFIG_PACKAGE_ip6tables is not set
-          CONFIG_PACKAGE_kmod-ipt-core=n
-          CONFIG_PACKAGE_kmod-ipt-nat=n
-          CONFIG_PACKAGE_kmod-ipt-nat6=n
-          CONFIG_PACKAGE_kmod-nf-nathelper-extra=n
-          CONFIG_PACKAGE_kmod-ipv6=n
-          # CONFIG_PACKAGE_luci is not set
-          # CONFIG_PACKAGE_dnsmasq is not set
-          # CONFIG_PACKAGE_ppp is not set
-          EOF
-          make defconfig
-
-      - name: Cai dat Cau hinh He Thong (LAN, Wi-Fi, SSH, Triple Reset & cfg_manager)
-        run: |
-          cd openwrt
-          mkdir -p files/etc/config files/etc/hotplug.d/button files/usr/sbin files/etc/dropbear
-
-          # 1. Mat khau SSH mac dinh la 'root'
-          echo 'root:$1$wOSEP9x2$zP86p7aWkM0dK7uF.qS0X/:19000:0:99999:7:::' > files/etc/shadow
-
-          # 2. Mang LAN 192.168.1.1
-          cat << 'EOF' > files/etc/config/network
-          config interface 'loopback'
-                  option device 'lo'
-                  option proto 'static'
-                  option ipaddr '127.0.0.1'
-                  option netmask '255.0.0.0'
-
-          config interface 'lan'
-                  option device 'br-lan'
-                  option proto 'static'
-                  option ipaddr '192.168.1.1'
-                  option netmask '255.255.255.0'
-          EOF
-
-          # 3. Phat Wi-Fi Cuu ho: Mi3_recovery (1234567890)
-          cat << 'EOF' > files/etc/config/wireless
-          config wifi-device 'radio0'
-                  option type 'mac80211'
-                  option path '10180000.wmac'
-                  option channel '6'
-                  option band '2g'
-                  option htmode 'HT40'
-                  option disabled '0'
-
-          config wifi-iface 'default_radio0'
-                  option device 'radio0'
-                  option network 'lan'
-                  option mode 'ap'
-                  option ssid 'Mi3_recovery'
-                  option encryption 'psk2'
-                  option key '1234567890'
-          EOF
-
-          # 4. Script cfg_manager quan ly config ne Bad Block (Quet nguoc tu Block 31 ve 28)
-          cat << 'EOF' > files/usr/sbin/cfg_manager
-          #!/bin/sh
-          REC_DEV=$(grep -E '"(firmware|OS1|recovery)"' /proc/mtd | head -n1 | cut -d: -f1)
-          [ -z "$REC_DEV" ] && exit 1
-          MTD_PATH="/dev/${REC_DEV}"
-          CANDIDATE_BLOCKS="31 30 29 28"
-
-          case "$1" in
-              save)
-                  cd /
-                  tar -czf /tmp/cfg_payload.tar.gz etc/config/wireless etc/config/network etc/shadow 2>/dev/null
-                  SAVED=0
-                  for BLK in $CANDIDATE_BLOCKS; do
-                      if dd if=/tmp/cfg_payload.tar.gz of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null; then
-                          dd if=$MTD_PATH of=/tmp/cfg_verify.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
-                          if tar -tzf /tmp/cfg_verify.tar.gz >/dev/null 2>&1; then
-                              rm -f /tmp/cfg_verify.tar.gz
-                              SAVED=1
-                              break
-                          fi
-                          rm -f /tmp/cfg_verify.tar.gz
-                      fi
-                  done
-                  rm -f /tmp/cfg_payload.tar.gz
-                  [ $SAVED -eq 1 ] && exit 0 || exit 1
-                  ;;
-              load)
-                  for BLK in $CANDIDATE_BLOCKS; do
-                      dd if=$MTD_PATH of=/tmp/cfg_read.tar.gz bs=128k skip=$BLK count=1 2>/dev/null
-                      if tar -tzf /tmp/cfg_read.tar.gz >/dev/null 2>&1; then
-                          tar -xzf /tmp/cfg_read.tar.gz -C /
-                          rm -f /tmp/cfg_read.tar.gz
-                          wifi reload 2>/dev/null
-                          exit 0
-                      fi
-                      rm -f /tmp/cfg_read.tar.gz
-                  done
-                  ;;
-              reset)
-                  for BLK in $CANDIDATE_BLOCKS; do
-                      dd if=/dev/zero of=$MTD_PATH bs=128k seek=$BLK count=1 conv=sync 2>/dev/null
-                  done
-                  sync
-                  reboot
-                  ;;
-          esac
-          EOF
-
-          # 5. Khoi dong DHCP LAN + SSH + Led Amber
-          cat << 'EOF' > files/etc/rc.local
-          for led in /sys/class/leds/*; do
-              echo none > "$led/trigger" 2>/dev/null
-              echo 0 > "$led/brightness" 2>/dev/null
-          done
-          for led in /sys/class/leds/*yellow* /sys/class/leds/*orange* /sys/class/leds/*amber*; do
-              if [ -d "$led" ]; then
-                  echo timer > "$led/trigger" 2>/dev/null
-                  echo 1000 > "$led/delay_on" 2>/dev/null
-                  echo 1000 > "$led/delay_off" 2>/dev/null
-                  break
-              fi
-          done
-
-          /usr/sbin/cfg_manager load &
-
-          cat << 'DHCP' > /tmp/udhcpd.conf
-          start 192.168.1.100
-          end 192.168.1.200
-          interface br-lan
-          option subnet 255.255.255.0
-          option router 192.168.1.1
-          option lease 86400
-          DHCP
-          udhcpd /tmp/udhcpd.conf
-
-          dropbear -p 22
+          # 3. Kích hoạt dịch vụ
+          /etc/init.d/network restart
+          wifi
           exit 0
           EOF
+          chmod +x files/etc/uci-defaults/99-init-settings
 
-          # 6. Nut Triple Reset
-          cat << 'EOF' > files/etc/hotplug.d/button/00-triple-reset
-          #!/bin/sh
-          [ "$BUTTON" = "reset" ] || exit 0
-          [ "$ACTION" = "released" ] || exit 0
-          COUNTER="/tmp/reset_cnt"
-          TIME_F="/tmp/reset_time"
-          NOW=$(cut -d. -f1 /proc/uptime)
-          LAST=0; CNT=0
-          [ -f "$TIME_F" ] && LAST=$(cat "$TIME_F")
-          [ -f "$COUNTER" ] && CNT=$(cat "$COUNTER")
-          if [ $((NOW - LAST)) -le 1 ]; then
-              CNT=$((CNT + 1))
-          else
-              CNT=1
-          fi
-          echo "$NOW" > "$TIME_F"
-          echo "$CNT" > "$COUNTER"
-          if [ "$CNT" -ge 3 ]; then
-              rm -f "$COUNTER" "$TIME_F"
-              for led in /sys/class/leds/*; do
-                  echo timer > "$led/trigger" 2>/dev/null
-                  echo 80 > "$led/delay_on" 2>/dev/null
-                  echo 80 > "$led/delay_off" 2>/dev/null
-              done
-              /usr/sbin/cfg_manager reset
-          fi
-          EOF
-
-          chmod -R 755 files
-          chmod 600 files/etc/shadow
-          chmod +x files/usr/sbin/cfg_manager files/etc/rc.local files/etc/hotplug.d/button/00-triple-reset
-
-      - name: Bien dich Firmware (In chi tiet loi neu bi ngat)
-        run: |
-          cd openwrt
-          echo "=== BAT DAU BIEN DICH MAKE ==="
-          make -j$(nproc) || {
-              echo "=== MAKE BI NGAT: DANG GOI CHI TIET PACKAGE/INSTALL ==="
-              make package/install V=s -j1 || true
-              make target/install V=s -j1 || true
-              exit 1
-          }
-
-      - name: Luu Cache Build (Toan bo Toolchain, Host Tools & Packages Make 3)
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: |
-            openwrt/staging_dir
-            openwrt/build_dir/toolchain-*
-            openwrt/build_dir/target-*
-          key: mi3-cache-v4-${{ github.sha }}-${{ github.run_id }}
-
-      - name: Luu Artifacts (File Recovery Kernel)
-        uses: actions/upload-artifact@v4
-        if: success()
-        with:
-          name: Mi3_Recovery_Kernel
-          path: openwrt/bin/targets/ramips/mt7620/*initramfs-kernel.bin
+      - name: SSH trực tiếp vào máy GitHub (Tmate)
+        uses: mxschmitt/action-tmate@v3
+        # Bước này sẽ dừng lại và in ra link SSH để bạn điều khiển terminal trực tiếp
